@@ -5,6 +5,7 @@ pub enum Tile {
     Floor,
     Wall,
     Door { is_open: bool, locked: bool },
+    StairsDown,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -14,7 +15,7 @@ pub struct Enemy {
     pub hp: u32,
     pub max_hp: u32,
     pub energy: u32,
-    pub speed: u32, // Added to accumulated energy per tick
+    pub speed: u32,
     pub name: String,
 }
 

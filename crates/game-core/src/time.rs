@@ -1,3 +1,5 @@
+use crate::state::GameState;
+
 pub const TURN_ENERGY_THRESHOLD: u32 = 100;
 
 pub struct TimeSystem{
@@ -6,8 +8,7 @@ pub struct TimeSystem{
 
 impl TimeSystem {
     
-    pub fn advance_until_player(&mut self, state: &mut GameState) -> Vec<GameEvent> {
-        let mut events = Vec::new();
+    pub fn advance_until_player(&mut self, state: &mut GameState) {
 
         loop{
             if state.player.energy >= TURN_ENERGY_THRESHOLD {
@@ -15,18 +16,14 @@ impl TimeSystem {
             }
 
             state.player.energy += state.player.speed;
-            for enemy in &mut state.count_floor.enemies{
+            for enemy in &mut state.current_floor.enemies{
                 enemy.energy += enemy.speed;
 
-                if enemy.energy >= TURN_ENERGY_THRESHOLD{
-                    let action = enemy.decide_action(state);
-                    events.push(apply_enemy_action(state, enemy.id, action));
+                if enemy.energy >= TURN_ENERGY_THRESHOLD {
                     enemy.energy -= TURN_ENERGY_THRESHOLD;
-                }
-            }
+                }            }
             self.current_tick += 1;
         }
-        events
     }
 
 }

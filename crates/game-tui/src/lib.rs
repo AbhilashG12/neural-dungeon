@@ -1,3 +1,4 @@
+pub mod rendering;
 pub mod app;
 
 use std::io;

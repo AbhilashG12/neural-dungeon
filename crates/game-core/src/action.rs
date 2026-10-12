@@ -1,6 +1,7 @@
 use thiserror::Error;
 use crate::state::GameState;
 use crate::world::Tile;
+use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AttackType {
@@ -28,12 +29,13 @@ pub enum ActionResult {
     Interacted { description: String },
     Waited,
 }
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameAction {
     Move {dx: i32, dy: i32},
     Attack {target_id: usize, attack_type: AttackType},
-    Interact {target_id: usize},
+    Interact, 
     Converse {npc_id: usize, input: String},
+    Descend,
     Wait,
 }
 
@@ -54,7 +56,7 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Actio
                         return Err(GameError::BlockedByWall);
                     }
                 }
-                Tile::Floor => {}
+                Tile::Floor | Tile::StairsDown => {}
             }
 
             if state.current_floor.get_enemy_at(new_x, new_y).is_some() {
@@ -103,6 +105,21 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Actio
             state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
             Ok(ActionResult::Interacted { description: "You looked around.".to_string() })
         }
+        GameAction::Converse { npc_id, input: _ } => {
+            state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
+            Ok(ActionResult::Interacted { description: format!("You tried to speak to NPC {}.", npc_id) })
+        }
+        GameAction::Descend => {
+            let (px, py) = state.player.position;
+            if let Some(Tile::StairsDown) = state.current_floor.get_tile(px, py) {
+                state.current_floor = crate::state::GameState::new_test_state().current_floor; 
+                state.player.position = (5, 5);
+                state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
+                Ok(ActionResult::Interacted { description: "You descended deeper into the facility.".to_string() })
+            } else {
+                Err(GameError::InvalidTarget)
+            }
+    }
     }
 }
 
