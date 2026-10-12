@@ -1,0 +1,13 @@
+/target/
+
+*.log
+neural_dungeon_debug.log
+
+*.wal
+*.save
+snapshot.json
+/saves/
+
+.DS_Store
+.vscode/
+*.rs.bk
