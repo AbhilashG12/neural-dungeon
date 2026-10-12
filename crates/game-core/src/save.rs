@@ -3,31 +3,34 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 
 #[derive(Serialize, Deserialize)]
-pub struct GameSnapshot{
+pub struct GameSnapshot {
     pub version: String,
     pub seed: u64,
     pub state: crate::state::GameState,
 }
 
-pub struct SaveManager{
+pub struct SaveManager {
     snapshot_path: String,
     wal_path: String,
-    wal_writer: BufWriter<File>, 
+    wal_writer: BufWriter<File>,
 }
 
-impl SaveManager{
+impl SaveManager {
     pub fn init(dir: &str) -> anyhow::Result<Self> {
-        let wal_path = format!("{}/actions.wal",dir);
-        let file = OpenOptions::new().create(true).append(true).open(&wal_path)?;
+        let wal_path = format!("{}/actions.wal", dir);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wal_path)?;
 
-        Ok(Self{
-            snapshot_path: format!("{}/snapshot.json",dir),
+        Ok(Self {
+            snapshot_path: format!("{}/snapshot.json", dir),
             wal_path,
             wal_writer: BufWriter::new(file),
         })
     }
 
-    pub fn record_action(&mut self, action: &crate::action::GameAction) -> anyhow::Result<()>{
+    pub fn record_action(&mut self, action: &crate::action::GameAction) -> anyhow::Result<()> {
         let serialized = serde_json::to_string(action)?;
         writeln!(self.wal_writer, "{}", serialized)?;
         self.wal_writer.flush()?;

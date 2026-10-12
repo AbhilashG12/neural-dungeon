@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum InferenceError{
+pub enum InferenceError {
     #[error("Model Timeout")]
     Timeout,
     #[error("Failed to parse structured output")]
@@ -19,13 +19,13 @@ pub struct InferenceMetrics {
     pub active_quantization: String,
 }
 
-pub struct InferenceRequest{
+pub struct InferenceRequest {
     pub context: String,
     pub user_input: String,
-    pub allowed_actions: Vec<String>
+    pub allowed_actions: Vec<String>,
 }
 
-pub struct InferenceResponse{
+pub struct InferenceResponse {
     pub dialogue: String,
     pub proposed_action: Option<String>,
     pub metrics: InferenceMetrics,
@@ -34,5 +34,8 @@ pub struct InferenceResponse{
 
 #[async_trait]
 pub trait NpcInference {
-    async fn generate_response(&self, req: InferenceRequest) -> Result<InferenceResponse, InferenceError>;
+    async fn generate_response(
+        &self,
+        req: InferenceRequest,
+    ) -> Result<InferenceResponse, InferenceError>;
 }

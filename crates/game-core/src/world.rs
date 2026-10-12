@@ -8,6 +8,13 @@ pub enum Tile {
     StairsDown,
 }
 
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub enum EnemyState {
+    Idle,
+    Chasing,
+    Telegraphing { target_pos: (i32, i32), damage: u32 },
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Enemy {
     pub id: usize,
@@ -17,6 +24,14 @@ pub struct Enemy {
     pub energy: u32,
     pub speed: u32,
     pub name: String,
+    pub state: EnemyState,
+    pub aggro_range: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub enum ItemType {
+    Consumable { heal: u32 },
+    Key { door_id: String },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -24,13 +39,15 @@ pub struct Item {
     pub id: usize,
     pub name: String,
     pub position: (i32, i32),
+    pub item_type: ItemType,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DungeonFloor {
     pub width: usize,
     pub height: usize,
-    pub tiles: Vec<Tile>, 
+    pub tiles: Vec<Tile>,
+    pub explored: Vec<bool>,
     pub enemies: Vec<Enemy>,
     pub items: Vec<Item>,
 }
@@ -41,6 +58,7 @@ impl DungeonFloor {
             width,
             height,
             tiles: vec![Tile::Wall; width * height],
+            explored: vec![false; width * height],
             enemies: Vec::new(),
             items: Vec::new(),
         }
@@ -50,13 +68,23 @@ impl DungeonFloor {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return None;
         }
-        Some(self.tiles[(y * self.width as i32 + x) as usize])
+        Some(self.tiles[self.idx(x, y)])
     }
 
     pub fn set_tile(&mut self, x: i32, y: i32, tile: Tile) {
         if x >= 0 && y >= 0 && x < self.width as i32 && y < self.height as i32 {
-            self.tiles[(y * self.width as i32 + x) as usize] = tile;
+            let idx = self.idx(x, y);
+            self.tiles[idx] = tile;
         }
+    }
+    pub fn idx(&self, x: i32, y: i32) -> usize {
+        (y * self.width as i32 + x) as usize
+    }
+    pub fn is_explored(&self, x: i32, y: i32) -> bool {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return false;
+        }
+        self.explored[self.idx(x, y)]
     }
 
     pub fn get_enemy_at(&self, x: i32, y: i32) -> Option<&Enemy> {
