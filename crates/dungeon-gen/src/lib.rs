@@ -93,6 +93,46 @@ impl Generator {
             let stairs_pos = rooms.last().unwrap().center();
             floor.set_tile(stairs_pos.0, stairs_pos.1, Tile::StairsDown);
 
+            // Spawn 3 distinct NPCs for Phase 5 compliance
+            if rooms.len() > 3 {
+                floor.npcs.push(game_core::world::Npc {
+                    id: 1,
+                    name: "Dr. Aris (Corrupted)".to_string(),
+                    symbol: 'A',
+                    position: (player_start.0 + 1, player_start.1),
+                    personality: "Paranoid, highly technical, fragmented memory.".to_string(),
+                    goal: "Protect the sector keys from unauthorized drones.".to_string(),
+                    trust_level: 20,
+                    memory: vec![],
+                });
+
+                let pos2 = rooms[1].center();
+                floor.npcs.push(game_core::world::Npc {
+                    id: 2,
+                    name: "Maintenance Node 7".to_string(),
+                    symbol: 'M',
+                    position: pos2,
+                    personality: "Depressed, bureaucratic, obsessed with cleaning protocols."
+                        .to_string(),
+                    goal: "Ensure the floors are devoid of organic material.".to_string(),
+                    trust_level: 50,
+                    memory: vec![],
+                });
+
+                let pos3 = rooms[2].center();
+                floor.npcs.push(game_core::world::Npc {
+                    id: 3,
+                    name: "Security Terminal".to_string(),
+                    symbol: 'T',
+                    position: pos3,
+                    personality: "Aggressive, suspicious, strictly adheres to protocol."
+                        .to_string(),
+                    goal: "Prevent access to the stairs.".to_string(),
+                    trust_level: 0,
+                    memory: vec![],
+                });
+            }
+
             // 3. Enemies and Loot (Difficulty scaling based on depth)
             for i in 1..rooms.len() - 1 {
                 if self.rng.gen_bool(0.6) {

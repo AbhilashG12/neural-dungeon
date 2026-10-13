@@ -8,6 +8,18 @@ pub enum Tile {
     StairsDown,
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Npc {
+    pub id: usize,
+    pub name: String,
+    pub symbol: char,
+    pub position: (i32, i32),
+    pub personality: String,
+    pub goal: String,
+    pub trust_level: i32,
+    pub memory: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub enum EnemyState {
     Idle,
@@ -50,6 +62,7 @@ pub struct DungeonFloor {
     pub explored: Vec<bool>,
     pub enemies: Vec<Enemy>,
     pub items: Vec<Item>,
+    pub npcs: Vec<Npc>,
 }
 
 impl DungeonFloor {
@@ -61,7 +74,12 @@ impl DungeonFloor {
             explored: vec![false; width * height],
             enemies: Vec::new(),
             items: Vec::new(),
+            npcs: Vec::new(),
         }
+    }
+
+    pub fn get_npc_at(&self, x: i32, y: i32) -> Option<&Npc> {
+        self.npcs.iter().find(|n| n.position == (x, y))
     }
 
     pub fn get_tile(&self, x: i32, y: i32) -> Option<Tile> {

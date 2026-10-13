@@ -1,5 +1,5 @@
 use crate::state::GameState;
-use crate::world::{Tile, ItemType};
+use crate::world::{ItemType, Tile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

@@ -1,20 +1,25 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use dungeon_gen::Generator;
-use game_core::action::{GameAction, process_action};
+use game_core::action::GameAction;
 use game_core::state::GameState;
-use ratatui::{
-    Terminal,
-    backend::Backend,
-    widgets::{Block, Borders, Paragraph},
-};
+use inference_adapter::{InferenceRequest, MockEngine, NpcInference};
+use ratatui::{Terminal, backend::Backend};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum UiMode {
     Playing,
     Paused,
     Inventory,
     GameOver,
+    Help,
+    Dialogue {
+        npc_id: usize,
+        input_buffer: String,
+        is_waiting: bool,
+    },
 }
 
 pub struct GameApp {
@@ -22,6 +27,20 @@ pub struct GameApp {
     pub ui_mode: UiMode,
     pub should_quit: bool,
     pub log_messages: Vec<String>,
+    pub async_tx: mpsc::UnboundedSender<AsyncEvent>,
+    pub async_rx: mpsc::UnboundedReceiver<AsyncEvent>,
+    pub inference_engine: Arc<dyn NpcInference>,
+}
+
+pub enum AsyncEvent {
+    InferenceComplete {
+        npc_id: usize,
+        response: inference_adapter::InferenceResponse,
+    },
+    InferenceError {
+        npc_id: usize,
+        error: String,
+    },
 }
 
 impl GameApp {
@@ -33,7 +52,10 @@ impl GameApp {
         let (floor, player_start) = generator.generate_floor(70, 30, state.floor_number);
         state.current_floor = floor;
         state.player.position = player_start;
-        game_core::ai::update_fov(&mut state);
+
+        // Initialize the Tokio multi-producer, single-consumer channel for async inference
+        let (tx, rx) = mpsc::unbounded_channel();
+
         Self {
             state,
             ui_mode: UiMode::Playing,
@@ -42,6 +64,9 @@ impl GameApp {
                 "Welcome to Neural Dungeon.".to_string(),
                 format!("Run ID: {:X} | V1", 420193),
             ],
+            async_tx: tx,
+            async_rx: rx,
+            inference_engine: Arc::new(MockEngine),
         }
     }
 
@@ -49,6 +74,59 @@ impl GameApp {
         self.log_messages.push(msg);
         if self.log_messages.len() > 5 {
             self.log_messages.remove(0);
+        }
+    }
+
+    /// Processes messages sent back from the background LLM thread
+    pub fn process_async_events(&mut self) {
+        while let Ok(event) = self.async_rx.try_recv() {
+            match event {
+                // CORRECT PATTERN: We only extract npc_id and the unified response object
+                AsyncEvent::InferenceComplete { npc_id, response } => {
+                    if let Some(npc) = self.state.current_floor.npcs.iter_mut().find(|n| n.id == npc_id) {
+                        npc.memory.push(format!("{}: {}", npc.name, response.dialogue));
+                    }
+                    
+                    if let Some(act) = &response.proposed_action {
+                        if act == "unlock_doors" {
+                            for tile in self.state.current_floor.tiles.iter_mut() {
+                                if let game_core::world::Tile::Door { locked, .. } = tile {
+                                    *locked = false;
+                                }
+                            }
+                            self.log("AI SYSTEM: Override accepted. Doors unlocked.".to_string());
+                        } else if act == "reveal_map" {
+                            for explored in self.state.current_floor.explored.iter_mut() {
+                                *explored = true;
+                            }
+                            self.log("AI SYSTEM: Sector map data downloaded.".to_string());
+                        }
+                    }
+
+                    self.log(format!(
+                        "Inference: {}ms | In: {} tok | Out: {} tok", 
+                        response.metrics.total_latency_ms,
+                        response.metrics.prompt_tokens,
+                        response.metrics.completion_tokens
+                    ));
+
+                    if let UiMode::Dialogue { is_waiting, .. } = &mut self.ui_mode {
+                        *is_waiting = false;
+                    }
+                }
+                // CORRECT PATTERN: Extracting fields from the struct variant, not a tuple variant
+                AsyncEvent::InferenceError { npc_id, error } => {
+                    self.log(format!("INFERENCE ERROR: {}", error));
+                    
+                    if let Some(npc) = self.state.current_floor.npcs.iter_mut().find(|n| n.id == npc_id) {
+                        npc.memory.push(format!("{}: My neural link is failing. I cannot process that right now.", npc.name));
+                    }
+
+                    if let UiMode::Dialogue { is_waiting, .. } = &mut self.ui_mode {
+                        *is_waiting = false;
+                    }
+                }
+            }
         }
     }
 
@@ -61,37 +139,75 @@ impl GameApp {
             return;
         }
 
-        match self.ui_mode {
+        // We clone the mode to avoid borrow checker conflicts when mutating state
+        let mut current_mode = self.ui_mode.clone();
+
+        match &mut current_mode {
             UiMode::Playing => {
                 let mut action = None;
 
                 match key.code {
-                   KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Up => action = Some(GameAction::Move { dx: 0, dy: -1 }),
-                    KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Down => action = Some(GameAction::Move { dx: 0, dy: 1 }),
-                    KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Left => action = Some(GameAction::Move { dx: -1, dy: 0 }),
-                    KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Right => action = Some(GameAction::Move { dx: 1, dy: 0 }),
-                    
+                    KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => self.ui_mode = UiMode::Help,
+                    KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Up => {
+                        action = Some(GameAction::Move { dx: 0, dy: -1 })
+                    }
+                    KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Down => {
+                        action = Some(GameAction::Move { dx: 0, dy: 1 })
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Left => {
+                        action = Some(GameAction::Move { dx: -1, dy: 0 })
+                    }
+                    KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Right => {
+                        action = Some(GameAction::Move { dx: 1, dy: 0 })
+                    }
                     KeyCode::Char('e') | KeyCode::Char('E') => action = Some(GameAction::Evade),
                     KeyCode::Char(' ') | KeyCode::Char('.') => action = Some(GameAction::Wait),
-                    
-                    KeyCode::Char('f') | KeyCode::Char('F') => action = Some(GameAction::Interact), 
+
+                    KeyCode::Char('f') | KeyCode::Char('F') => {
+                        // Check for NPC interaction first
+                        let (px, py) = self.state.player.position;
+                        let dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)];
+                        let mut talked = false;
+                        for (dx, dy) in dirs {
+                            if let Some(npc) = self.state.current_floor.get_npc_at(px + dx, py + dy)
+                            {
+                                self.ui_mode = UiMode::Dialogue {
+                                    npc_id: npc.id,
+                                    input_buffer: String::new(),
+                                    is_waiting: false,
+                                };
+                                talked = true;
+                                break;
+                            }
+                        }
+                        if !talked {
+                            action = Some(game_core::action::GameAction::Interact);
+                        }
+                    }
                     KeyCode::Char('g') | KeyCode::Char('G') => action = Some(GameAction::GrabItem),
-                    KeyCode::Char('u') | KeyCode::Char('U') => action = Some(GameAction::UseItem { index: 0 }),
+                    KeyCode::Char('u') | KeyCode::Char('U') => {
+                        action = Some(GameAction::UseItem { index: 0 })
+                    }
                     KeyCode::Char('i') | KeyCode::Char('I') => self.ui_mode = UiMode::Inventory,
                     KeyCode::Esc => self.ui_mode = UiMode::Paused,
                     KeyCode::Char('>') => {
                         let (px, py) = self.state.player.position;
-                        if let Some(game_core::world::Tile::StairsDown) = self.state.current_floor.get_tile(px, py) {
+                        if let Some(game_core::world::Tile::StairsDown) =
+                            self.state.current_floor.get_tile(px, py)
+                        {
                             self.state.floor_number += 1;
-                            let mut generator = dungeon_gen::Generator::new(self.state.seed + self.state.floor_number as u64);
-                            let (floor, player_start) = generator.generate_floor(40, 20, self.state.floor_number);
+                            let mut generator = dungeon_gen::Generator::new(
+                                self.state.seed + self.state.floor_number as u64,
+                            );
+                            let (floor, player_start) =
+                                generator.generate_floor(70, 30, self.state.floor_number);
                             self.state.current_floor = floor;
                             self.state.player.position = player_start;
                             self.log(format!("Descended to Sector {}.", self.state.floor_number));
                         } else {
                             self.log("There are no stairs here.".to_string());
                         }
-                    }                    KeyCode::Esc => self.ui_mode = UiMode::Paused,
+                    }
                     _ => {}
                 }
 
@@ -101,7 +217,6 @@ impl GameApp {
                             for log in action_logs {
                                 self.log(log);
                             }
-
                             let ai_logs = game_core::ai::process_engine_tick(&mut self.state);
                             for log in ai_logs {
                                 self.log(log);
@@ -122,8 +237,16 @@ impl GameApp {
                 KeyCode::Char('q') => self.should_quit = true,
                 _ => {}
             },
+            UiMode::Help => {
+                if let KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') = key.code {
+                    self.ui_mode = UiMode::Playing;
+                }
+            },
             UiMode::Inventory => {
-                if key.code == KeyCode::Esc || key.code == KeyCode::Char('i') {
+                if key.code == KeyCode::Esc
+                    || key.code == KeyCode::Char('i')
+                    || key.code == KeyCode::Char('I')
+                {
                     self.ui_mode = UiMode::Playing;
                 }
             }
@@ -137,27 +260,125 @@ impl GameApp {
                 }
                 _ => {}
             },
+            UiMode::Dialogue {
+                npc_id,
+                input_buffer,
+                is_waiting,
+            } => {
+                if *is_waiting {
+                    return;
+                }
+
+                match key.code {
+                    KeyCode::Esc => self.ui_mode = UiMode::Playing,
+                    KeyCode::Backspace => {
+                        input_buffer.pop();
+                        self.ui_mode = current_mode; // Save buffer back to state
+                    }
+                    KeyCode::Char(c) => {
+                        input_buffer.push(c);
+                        self.ui_mode = current_mode; // Save buffer back to state
+                    }
+                    KeyCode::Enter => {
+                        if input_buffer.trim().is_empty() {
+                            return;
+                        }
+
+                        let msg = input_buffer.clone();
+                        input_buffer.clear();
+                        *is_waiting = true;
+
+                        let npc_idx = self
+                            .state
+                            .current_floor
+                            .npcs
+                            .iter()
+                            .position(|n| n.id == *npc_id)
+                            .unwrap();
+                        let npc = &mut self.state.current_floor.npcs[npc_idx];
+
+                        npc.memory.push(format!("Player: {}", msg));
+
+                        if npc.memory.len() > 10 {
+                            npc.memory.drain(0..2);
+                            npc.memory
+                                .insert(0, "[System: Earlier memory archived]".to_string());
+                        }
+
+                        let req = InferenceRequest {
+                            system_prompt: format!(
+                                "You are {}. Personality: {}. Goal: {}",
+                                npc.name, npc.personality, npc.goal
+                            ),
+                            conversation_history: npc.memory.join("\n"),
+                            user_input: msg,
+                            allowed_actions: vec![
+                                "unlock_doors".to_string(),
+                                "reveal_map".to_string(),
+                            ],
+                            max_tokens: 150,
+                        };
+
+                        let tx = self.async_tx.clone();
+                        let engine = self.inference_engine.clone();
+                        let id = *npc_id;
+
+                        tokio::spawn(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                engine.generate_response(req),
+                            )
+                            .await;
+
+                            match result {
+                                Ok(Ok(res)) => {
+                                    tx.send(AsyncEvent::InferenceComplete {
+                                        npc_id: id,
+                                        response: res,
+                                    })
+                                    .unwrap();
+                                }
+                                Ok(Err(e)) => tx
+                                    .send(AsyncEvent::InferenceError {
+                                        npc_id: id,
+                                        error: e.to_string(),
+                                    })
+                                    .unwrap(),
+                                Err(_) => tx
+                                    .send(AsyncEvent::InferenceError {
+                                        npc_id: id,
+                                        error: "Inference timed out".to_string(),
+                                    })
+                                    .unwrap(),
+                            }
+                        });
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 }
 
-pub async fn run_app<B: Backend>(terminal: &mut Terminal<B>) -> anyhow::Result<()> {
+pub async fn run_app<B: ratatui::backend::Backend>(terminal: &mut ratatui::Terminal<B>) -> anyhow::Result<()> {
     let mut app = GameApp::new();
+    terminal.clear()?;
+    terminal.draw(|f| crate::rendering::render(f, &app))?;
 
     loop {
+        app.process_async_events();
         terminal.draw(|f| crate::rendering::render(f, &app))?;
-        if event::poll(Duration::from_millis(16))? {
-            if let Event::Key(key) = event::read()? {
+
+        if crossterm::event::poll(std::time::Duration::from_millis(16))? {
+            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 app.handle_input(key);
             }
         }
-
-        if app.should_quit {
-            break;
-        }
+        if app.should_quit { break; }
     }
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
