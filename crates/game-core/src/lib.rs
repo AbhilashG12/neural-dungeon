@@ -1,3 +1,4 @@
+pub mod puzzle;
 pub mod action;
 pub mod ai;
 pub mod save;

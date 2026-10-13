@@ -6,6 +6,15 @@ pub enum Tile {
     Wall,
     Door { is_open: bool, locked: bool },
     StairsDown,
+    Terminal { puzzle: PuzzleType, is_solved: bool },
+}
+
+#[derive(Serialize, Deserialize,Copy, Clone,Eq, Debug, PartialEq)]
+pub enum PuzzleType {
+    TokenVault,
+    QuantizationForge,
+    ContextCollapse,
+    InferenceReactor,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -77,7 +86,13 @@ impl DungeonFloor {
             npcs: Vec::new(),
         }
     }
-
+    pub fn get_tile_mut(&mut self, x: i32, y: i32) -> Option<&mut Tile> {
+        if x >= 0 && x < self.width as i32 && y >= 0 && y < self.height as i32 {
+            Some(&mut self.tiles[(y * self.width as i32 + x) as usize])
+        } else {
+            None
+        }
+    }
     pub fn get_npc_at(&self, x: i32, y: i32) -> Option<&Npc> {
         self.npcs.iter().find(|n| n.position == (x, y))
     }

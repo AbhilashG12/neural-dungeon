@@ -7,6 +7,8 @@ use ratatui::{Terminal, backend::Backend};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use game_core::puzzle::PuzzleState;
+use game_core::world::{Tile, PuzzleType};
 
 #[derive(PartialEq, Clone)]
 pub enum UiMode {
@@ -20,6 +22,8 @@ pub enum UiMode {
         input_buffer: String,
         is_waiting: bool,
     },
+    Puzzle { puzzle: PuzzleType, state: PuzzleState, coords: (i32, i32) },
+    PuzzleSolved { explanation: String },
 }
 
 pub struct GameApp {
@@ -163,27 +167,41 @@ impl GameApp {
                     KeyCode::Char('e') | KeyCode::Char('E') => action = Some(GameAction::Evade),
                     KeyCode::Char(' ') | KeyCode::Char('.') => action = Some(GameAction::Wait),
 
-                    KeyCode::Char('f') | KeyCode::Char('F') => {
-                        // Check for NPC interaction first
+                   KeyCode::Char('f') | KeyCode::Char('F') => {
                         let (px, py) = self.state.player.position;
                         let dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)];
-                        let mut talked = false;
+                        let mut interacted = false;
+
                         for (dx, dy) in dirs {
-                            if let Some(npc) = self.state.current_floor.get_npc_at(px + dx, py + dy)
-                            {
+                            let tx = px + dx;
+                            let ty = py + dy;
+                            if let Some(game_core::world::Tile::Terminal { puzzle, is_solved }) = self.state.current_floor.get_tile(tx, ty) {
+                                if !is_solved {
+                                    self.ui_mode = UiMode::Puzzle { 
+                                        puzzle: puzzle.clone(), 
+                                        state: game_core::puzzle::PuzzleState::new(&puzzle),
+                                        coords: (tx, ty)
+                                    };
+                                } else {
+                                    self.log("Terminal already bypassed.".to_string());
+                                }
+                                interacted = true;
+                                break;
+                            }
+                            if let Some(npc) = self.state.current_floor.get_npc_at(tx, ty) {
                                 self.ui_mode = UiMode::Dialogue {
                                     npc_id: npc.id,
                                     input_buffer: String::new(),
                                     is_waiting: false,
                                 };
-                                talked = true;
+                                interacted = true;
                                 break;
                             }
                         }
-                        if !talked {
+                        if !interacted {
                             action = Some(game_core::action::GameAction::Interact);
                         }
-                    }
+                    }                    
                     KeyCode::Char('g') | KeyCode::Char('G') => action = Some(GameAction::GrabItem),
                     KeyCode::Char('u') | KeyCode::Char('U') => {
                         action = Some(GameAction::UseItem { index: 0 })
@@ -250,7 +268,93 @@ impl GameApp {
                     self.ui_mode = UiMode::Playing;
                 }
             }
-            UiMode::GameOver => match key.code {
+            UiMode::PuzzleSolved { .. } => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ')) {
+                    self.ui_mode = UiMode::Playing;
+                } else {
+                    self.ui_mode = current_mode; 
+                }
+            }
+           UiMode::Puzzle { puzzle, state, coords } => {
+                let current_coords = *coords;
+                let puzzle_type = puzzle.clone();
+                let explanation = state.get_advanced_explanation().to_string(); 
+                let mut solved = false;
+                let mut abort = false;
+
+                match key.code {
+                    KeyCode::Esc => abort = true,
+                    KeyCode::Enter => {
+                        if state.check_win_condition() {
+                            solved = true;
+                        } else {
+                            self.log("ACCESS DENIED: Neural configuration invalid.".to_string());
+                        }
+                    }
+                    KeyCode::Char(c) => match state {
+                        game_core::puzzle::PuzzleState::TokenVault { selected, fragments, .. } => {
+                            if let Some(digit) = c.to_digit(10) {
+                                let idx = digit as usize;
+                                if idx < fragments.len() {
+                                    if let Some(pos) = selected.iter().position(|&x| x == idx) { selected.remove(pos); } 
+                                    else { selected.push(idx); }
+                                }
+                            }
+                        }
+                        game_core::puzzle::PuzzleState::ContextCollapse { selected, logs, .. } => {
+                            if let Some(digit) = c.to_digit(10) {
+                                let idx = digit as usize;
+                                if idx < logs.len() {
+                                    if let Some(pos) = selected.iter().position(|&x| x == idx) { selected.remove(pos); } 
+                                    else { selected.push(idx); }
+                                }
+                            }
+                        }
+                        game_core::puzzle::PuzzleState::InferenceReactor { cursor, stages, selected } => {
+                            if (c == 'w' || c == 'W') && *cursor > 0 { *cursor -= 1; }
+                            if (c == 's' || c == 'S') && *cursor < stages.len() - 1 { *cursor += 1; }
+                            if c == ' ' {
+                                if let Some(sel_idx) = selected {
+                                    stages.swap(*sel_idx, *cursor);
+                                    *selected = None;
+                                } else {
+                                    *selected = Some(*cursor);
+                                }
+                            }
+                        }
+                        _ => {}
+                    },
+                    KeyCode::Up | KeyCode::Down => match state {
+                        game_core::puzzle::PuzzleState::QuantizationForge { current_bits } => {
+                            if key.code == KeyCode::Up && *current_bits < 32 { *current_bits *= 2; }
+                            if key.code == KeyCode::Down && *current_bits > 1 { *current_bits /= 2; }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+
+                if abort {
+                    self.ui_mode = UiMode::Playing;
+                } else if solved {
+                    if let Some(game_core::world::Tile::Terminal { is_solved, .. }) = self.state.current_floor.get_tile_mut(current_coords.0, current_coords.1) {
+                        *is_solved = true;
+                    }
+                    
+                    let reward_msg = match puzzle_type {
+                        game_core::world::PuzzleType::TokenVault => "REWARD: Plasma Battery. Terminal hacked.",
+                        game_core::world::PuzzleType::QuantizationForge => "REWARD: Sector Map. Terminal hacked.",
+                        game_core::world::PuzzleType::ContextCollapse => "REWARD: Max HP +20. Terminal hacked.",
+                        game_core::world::PuzzleType::InferenceReactor => "REWARD: Energy +50. Terminal hacked.",
+                    };
+                    self.log(reward_msg.to_string());
+                    
+                    self.ui_mode = UiMode::PuzzleSolved { explanation };
+                } else {
+                    self.ui_mode = current_mode;
+                }
+            }  
+           UiMode::GameOver => match key.code {
                 KeyCode::Char('q') => self.should_quit = true,
                 KeyCode::Char('r') => {
                     self.state = GameState::new_test_state();

@@ -37,7 +37,7 @@ impl Generator {
         }
     }
 
-    pub fn generate_floor(
+   pub fn generate_floor(
         &mut self,
         width: usize,
         height: usize,
@@ -131,6 +131,26 @@ impl Generator {
                     trust_level: 0,
                     memory: vec![],
                 });
+            }
+
+            // Spawn Educational Puzzle Terminals (Phase 6)
+            if rooms.len() > 4 {
+                let puzzles = [
+                    game_core::world::PuzzleType::TokenVault,
+                    game_core::world::PuzzleType::QuantizationForge,
+                    game_core::world::PuzzleType::ContextCollapse,
+                    game_core::world::PuzzleType::InferenceReactor,
+                ];
+                
+                for (i, puzzle) in puzzles.into_iter().enumerate() {
+                    if i + 3 < rooms.len() - 1 {
+                        let center = rooms[i + 3].center();
+                        floor.set_tile(center.0, center.1, Tile::Terminal { 
+                            puzzle, 
+                            is_solved: false 
+                        });
+                    }
+                }
             }
 
             // 3. Enemies and Loot (Difficulty scaling based on depth)

@@ -192,6 +192,7 @@ mod tests {
         let mut state = GameState {
             turn_count: 0,
             seed: 0,
+            floor_number: 1,
             player: Player {
                 position: (1, 1),
                 hp: 100,
@@ -199,6 +200,7 @@ mod tests {
                 energy: 0,
                 speed: 100,
                 inventory: vec![],
+                active_quests: vec![],
                 evading: true,
                 max_inventory: 10,
             },

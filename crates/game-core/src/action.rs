@@ -272,6 +272,7 @@ mod tests {
         GameState {
             turn_count: 0,
             seed: 42,
+            floor_number: 1,
             player: Player {
                 position: (1, 1),
                 hp: 100,

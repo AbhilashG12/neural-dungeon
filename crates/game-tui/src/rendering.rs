@@ -43,6 +43,8 @@ pub fn render(f: &mut Frame, app: &GameApp) {
             input_buffer,
             is_waiting,
         } => render_dialogue_menu(f, app, *npc_id, input_buffer, *is_waiting, f.size()),
+        UiMode::Puzzle { puzzle, state, .. } => render_puzzle_menu(f, puzzle, state, f.size()),
+        UiMode::PuzzleSolved { explanation } => render_puzzle_solved_menu(f, explanation, f.size()),
         UiMode::Playing => {}
     }
 }
@@ -121,22 +123,22 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
                     }
                 }
             } else {
-                match floor.get_tile(x, y).unwrap_or(Tile::Wall) {
+               match floor.get_tile(x, y).unwrap_or(Tile::Wall) {
                     Tile::Wall => row.push(Span::styled("█", Style::default().fg(COLOR_TECH_GRAY))),
-                    Tile::Floor => {
-                        row.push(Span::styled("·", Style::default().fg(Color::DarkGray)))
-                    }
+                    Tile::Floor => row.push(Span::styled("·", Style::default().fg(Color::DarkGray))),
                     Tile::Door { is_open, .. } => {
                         if is_open {
-                            row.push(Span::styled("·", Style::default().fg(Color::DarkGray))); // Open door looks like floor
+                            row.push(Span::styled("·", Style::default().fg(Color::DarkGray)));
                         } else {
-                            row.push(Span::styled("▣", Style::default().fg(Color::Yellow))); // Closed door
+                            row.push(Span::styled("▣", Style::default().fg(Color::Yellow)));
                         }
                     }
-                    Tile::StairsDown => {
-                        row.push(Span::styled("▼", Style::default().fg(COLOR_NEON_MAGENTA)))
+                    Tile::StairsDown => row.push(Span::styled("▼", Style::default().fg(COLOR_NEON_MAGENTA))),
+                    Tile::Terminal { is_solved, .. } => {
+                        let color = if is_solved { COLOR_HUD_GREEN } else { Color::Yellow };
+                        row.push(Span::styled("T", Style::default().fg(color).add_modifier(Modifier::BOLD)));
                     }
-                }
+                }            
             }
         }
         map_lines.push(Line::from(row));
@@ -418,5 +420,94 @@ fn render_help_menu(f: &mut Frame, area: Rect) {
     // Increased popup height to 75% to easily fit the new legend section
     let popup_area = centered_rect(65, 85, area);
     f.render_widget(Clear, popup_area);
+    f.render_widget(block, popup_area);
+}
+fn render_puzzle_menu(f: &mut Frame, puzzle: &game_core::world::PuzzleType, state: &game_core::puzzle::PuzzleState, area: Rect) {
+    let popup_area = centered_rect(60, 60, area);
+    f.render_widget(Clear, popup_area);
+
+    let mut text = Vec::new();
+    
+    match state {
+        game_core::puzzle::PuzzleState::TokenVault { fragments, selected, target } => {
+            text.push(Line::from(Span::styled("OBJECTIVE: Construct the sequence accurately.", Style::default().fg(COLOR_NEON_CYAN))));
+            text.push(Line::from(format!("TARGET: {}", target)));
+            text.push(Line::from(""));
+            text.push(Line::from("AVAILABLE FRAGMENTS (Press 0-9 to toggle):"));
+            for (i, frag) in fragments.iter().enumerate() {
+                let prefix = if selected.contains(&i) { "[x]" } else { "[ ]" };
+                text.push(Line::from(format!("{} {}: '{}' (ID: {})", prefix, i, frag.0, frag.1)));
+            }
+            let current: String = selected.iter().map(|&i| fragments[i].0).collect();
+            text.push(Line::from(""));
+            text.push(Line::from(format!("CURRENT BUFFER: {}", current)));
+        }
+        game_core::puzzle::PuzzleState::QuantizationForge { current_bits } => {
+            text.push(Line::from(Span::styled("OBJECTIVE: Balance precision against memory constraints.", Style::default().fg(COLOR_NEON_CYAN))));
+            text.push(Line::from("Use UP/DOWN to adjust weight precision."));
+            text.push(Line::from(""));
+            let memory = (*current_bits as f32 / 4.0) * 16.0; 
+            let coherence = if *current_bits == 32 { 100 } else if *current_bits == 16 { 99 } else if *current_bits == 8 { 98 } else if *current_bits == 4 { 95 } else { 12 };
+            text.push(Line::from(format!("PRECISION: {}-bit", current_bits)));
+            text.push(Line::from(format!("VRAM REQUIRED: {} GB", memory)));
+            text.push(Line::from(format!("MODEL COHERENCE: {}%", coherence)));
+        }
+        game_core::puzzle::PuzzleState::ContextCollapse { logs, selected, max_budget } => {
+            text.push(Line::from(Span::styled("OBJECTIVE: Prune KV Cache to retain essential data within budget.", Style::default().fg(COLOR_NEON_CYAN))));
+            text.push(Line::from(format!("CONTEXT BUDGET: {} Tokens", max_budget)));
+            text.push(Line::from(""));
+            let mut current_cost = 0;
+            for (i, log) in logs.iter().enumerate() {
+                let prefix = if selected.contains(&i) { current_cost += log.1; "[x]" } else { "[ ]" };
+                text.push(Line::from(format!("{} {}: {} ({}T)", prefix, i, log.0, log.1)));
+            }
+            let color = if current_cost > *max_budget { Color::Red } else { COLOR_HUD_GREEN };
+            text.push(Line::from(""));
+            text.push(Line::from(Span::styled(format!("CURRENT USAGE: {}/{}", current_cost, max_budget), Style::default().fg(color))));
+        }
+        game_core::puzzle::PuzzleState::InferenceReactor { stages, cursor, selected } => {
+            text.push(Line::from(Span::styled("OBJECTIVE: Realign the forward pass pipeline.", Style::default().fg(COLOR_NEON_CYAN))));
+            text.push(Line::from("Use W/S to move cursor. SPACE to select/swap."));
+            text.push(Line::from(""));
+            for (i, stage) in stages.iter().enumerate() {
+                let is_cursor = *cursor == i;
+                let is_selected = *selected == Some(i);
+                
+                let style = if is_selected { Style::default().fg(COLOR_NEON_MAGENTA).add_modifier(Modifier::BOLD) }
+                            else if is_cursor { Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::REVERSED) }
+                            else { Style::default().fg(Color::White) };
+                
+                text.push(Line::from(Span::styled(format!("  {}  ", stage), style)));
+            }
+        }
+    }
+    
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled("[ENTER] Compile & Submit  [ESC] Abort", Style::default().fg(Color::DarkGray))));
+
+    let title = format!(" {:?} ", puzzle);
+    let block = Paragraph::new(text).block(create_sci_fi_block(&title));
+    f.render_widget(block, popup_area);
+}
+
+fn render_puzzle_solved_menu(f: &mut Frame, explanation: &str, area: Rect) {
+    let popup_area = centered_rect(60, 40, area); // Make it wide enough for text wrapping
+    f.render_widget(Clear, popup_area);
+
+    let mut text = vec![
+        Line::from(Span::styled(" NEURAL LINK ESTABLISHED ", Style::default().fg(COLOR_HUD_GREEN).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+
+    text.push(Line::from(Span::styled(explanation, Style::default().fg(Color::White))));
+    
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled("[ESC] Acknowledge & Continue", Style::default().fg(Color::DarkGray))));
+
+    let block = Paragraph::new(text)
+        .block(create_sci_fi_block("DATA LOG EXTRACTED").border_style(Style::default().fg(COLOR_HUD_GREEN)))
+        .wrap(Wrap { trim: true }) // Automatically wraps the long explanation paragraph
+        .alignment(ratatui::layout::Alignment::Center);
+
     f.render_widget(block, popup_area);
 }
