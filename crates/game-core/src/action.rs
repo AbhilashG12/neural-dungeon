@@ -1,5 +1,5 @@
 use crate::state::GameState;
-use crate::world::Tile;
+use crate::world::{Tile, ItemType};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -58,36 +58,56 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
 
     state.player.evading = false;
     match action {
-       GameAction::Move { dx, dy } => {
+        GameAction::Move { dx, dy } => {
             let (px, py) = state.player.position;
             let (new_x, new_y) = (px + dx, py + dy);
 
             if let Some(enemy) = state.current_floor.get_enemy_at(new_x, new_y) {
                 let target_id = enemy.id;
-                return process_action(state, GameAction::Attack { 
-                    target_id, 
-                    attack_type: AttackType::Strike 
-                });
+                return process_action(
+                    state,
+                    GameAction::Attack {
+                        target_id,
+                        attack_type: AttackType::Strike,
+                    },
+                );
             }
 
-            let tile = state.current_floor.get_tile(new_x, new_y).unwrap_or(Tile::Wall);
-            if matches!(tile, Tile::Wall) { return Err(GameError::BlockedByWall); }
-            if let Tile::Door { is_open: false, .. } = tile { return Err(GameError::DoorLocked); }
+            let tile = state
+                .current_floor
+                .get_tile(new_x, new_y)
+                .unwrap_or(Tile::Wall);
+            if matches!(tile, Tile::Wall) {
+                return Err(GameError::BlockedByWall);
+            }
+            if let Tile::Door { is_open: false, .. } = tile {
+                return Err(GameError::DoorLocked);
+            }
 
             state.player.position = (new_x, new_y);
             state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
         }
-        GameAction::Attack { target_id, attack_type } => {
+        GameAction::Attack {
+            target_id,
+            attack_type,
+        } => {
             let (damage, cost) = match attack_type {
                 AttackType::Strike => (10, ACTION_COST),
                 AttackType::Overload => (25, ACTION_COST + 40),
             };
 
-            if state.player.energy < cost { return Err(GameError::InsufficientEnergy); }
-            
-            let enemy_idx = state.current_floor.enemies.iter().position(|e| e.id == target_id).ok_or(GameError::InvalidTarget)?;
+            if state.player.energy < cost {
+                return Err(GameError::InsufficientEnergy);
+            }
+
+            let enemy_idx = state
+                .current_floor
+                .enemies
+                .iter()
+                .position(|e| e.id == target_id)
+                .ok_or(GameError::InvalidTarget)?;
             let enemy = &mut state.current_floor.enemies[enemy_idx];
-            
+
             enemy.hp = enemy.hp.saturating_sub(damage);
             logs.push(format!("You hit {} for {} damage.", enemy.name, damage));
 
@@ -118,7 +138,24 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                     state.current_floor.get_tile(px + dx, py + dy)
                 {
                     if locked {
-                        logs.push("The door is locked.".to_string());
+                        if let Some(key_idx) = state.player.inventory.iter().position(|item| {
+                            matches!(item.item_type, crate::world::ItemType::Key { .. })
+                        }) {
+                            state.player.inventory.remove(key_idx);
+                            state.current_floor.set_tile(
+                                px + dx,
+                                py + dy,
+                                Tile::Door {
+                                    is_open: true,
+                                    locked: false,
+                                },
+                            );
+                            logs.push(
+                                "You unlocked the door! The Sector Key was consumed.".to_string(),
+                            );
+                        } else {
+                            logs.push("The door is locked. You need the Sector Key.".to_string());
+                        }
                     } else {
                         state.current_floor.set_tile(
                             px + dx,
@@ -186,6 +223,17 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                 }
                 let item = state.current_floor.items.remove(idx);
                 logs.push(format!("You picked up {}.", item.name));
+                if matches!(item.item_type, ItemType::Key { .. }) {
+                    if let Some(q) = state
+                        .player
+                        .active_quests
+                        .iter_mut()
+                        .find(|q| q.id == "main_01")
+                    {
+                        q.title = "Unlock the exit and descend".to_string();
+                        q.completed = true;
+                    }
+                }
                 state.player.inventory.push(item);
                 state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
             } else {

@@ -1,4 +1,5 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use dungeon_gen::Generator;
 use game_core::action::{GameAction, process_action};
 use game_core::state::GameState;
 use ratatui::{
@@ -27,11 +28,20 @@ impl GameApp {
     pub fn new() -> Self {
         let mut state = GameState::new_test_state();
         game_core::ai::process_engine_tick(&mut state);
+        let mut generator = Generator::new(state.seed);
+
+        let (floor, player_start) = generator.generate_floor(70, 30, state.floor_number);
+        state.current_floor = floor;
+        state.player.position = player_start;
+        game_core::ai::update_fov(&mut state);
         Self {
             state,
             ui_mode: UiMode::Playing,
             should_quit: false,
-            log_messages: vec!["Welcome to Neural Dungeon.".to_string()],
+            log_messages: vec![
+                "Welcome to Neural Dungeon.".to_string(),
+                format!("Run ID: {:X} | V1", 420193),
+            ],
         }
     }
 
@@ -56,26 +66,32 @@ impl GameApp {
                 let mut action = None;
 
                 match key.code {
-                    KeyCode::Char('w') | KeyCode::Up => {
-                        action = Some(GameAction::Move { dx: 0, dy: -1 })
-                    }
-                    KeyCode::Char('s') | KeyCode::Down => {
-                        action = Some(GameAction::Move { dx: 0, dy: 1 })
-                    }
-                    KeyCode::Char('a') | KeyCode::Left => {
-                        action = Some(GameAction::Move { dx: -1, dy: 0 })
-                    }
-                    KeyCode::Char('d') | KeyCode::Right => {
-                        action = Some(GameAction::Move { dx: 1, dy: 0 })
-                    }
-                    KeyCode::Char('e') => action = Some(GameAction::Evade),
-                    KeyCode::Char('f') => action = Some(GameAction::Interact),
-                    KeyCode::Char('g') => action = Some(GameAction::GrabItem),
-                    KeyCode::Char(' ') => action = Some(GameAction::Wait),
-                    KeyCode::Char('i') => self.ui_mode = UiMode::Inventory,
+                   KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Up => action = Some(GameAction::Move { dx: 0, dy: -1 }),
+                    KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Down => action = Some(GameAction::Move { dx: 0, dy: 1 }),
+                    KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Left => action = Some(GameAction::Move { dx: -1, dy: 0 }),
+                    KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Right => action = Some(GameAction::Move { dx: 1, dy: 0 }),
+                    
+                    KeyCode::Char('e') | KeyCode::Char('E') => action = Some(GameAction::Evade),
+                    KeyCode::Char(' ') | KeyCode::Char('.') => action = Some(GameAction::Wait),
+                    
+                    KeyCode::Char('f') | KeyCode::Char('F') => action = Some(GameAction::Interact), 
+                    KeyCode::Char('g') | KeyCode::Char('G') => action = Some(GameAction::GrabItem),
                     KeyCode::Char('u') | KeyCode::Char('U') => action = Some(GameAction::UseItem { index: 0 }),
-                    KeyCode::Char('>') | KeyCode::Char('.') => action = Some(GameAction::Descend),
+                    KeyCode::Char('i') | KeyCode::Char('I') => self.ui_mode = UiMode::Inventory,
                     KeyCode::Esc => self.ui_mode = UiMode::Paused,
+                    KeyCode::Char('>') => {
+                        let (px, py) = self.state.player.position;
+                        if let Some(game_core::world::Tile::StairsDown) = self.state.current_floor.get_tile(px, py) {
+                            self.state.floor_number += 1;
+                            let mut generator = dungeon_gen::Generator::new(self.state.seed + self.state.floor_number as u64);
+                            let (floor, player_start) = generator.generate_floor(40, 20, self.state.floor_number);
+                            self.state.current_floor = floor;
+                            self.state.player.position = player_start;
+                            self.log(format!("Descended to Sector {}.", self.state.floor_number));
+                        } else {
+                            self.log("There are no stairs here.".to_string());
+                        }
+                    }                    KeyCode::Esc => self.ui_mode = UiMode::Paused,
                     _ => {}
                 }
 

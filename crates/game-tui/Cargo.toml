@@ -10,4 +10,5 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+dungeon-gen = { path = "../dungeon-gen" }
 anyhow = { workspace = true }

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct GameState {
     pub turn_count: u64,
     pub seed: u64,
+    pub floor_number: u32,
     pub player: Player,
     pub current_floor: DungeonFloor,
 }
@@ -41,9 +42,16 @@ impl GameState {
             }
         }
 
-       for y in 5..15 {
+        for y in 5..15 {
             if y == 10 {
-                floor.set_tile(20, y as i32, Tile::Door { is_open: false, locked: false });
+                floor.set_tile(
+                    20,
+                    y as i32,
+                    Tile::Door {
+                        is_open: false,
+                        locked: false,
+                    },
+                );
             } else {
                 floor.set_tile(20, y as i32, Tile::Wall);
             }
@@ -62,7 +70,8 @@ impl GameState {
         });
         Self {
             turn_count: 0,
-            seed: 42,
+            seed: 420193,
+            floor_number: 1,
             player: Player {
                 position: (5, 5),
                 hp: 100,
@@ -72,13 +81,13 @@ impl GameState {
                 inventory: vec![],
                 active_quests: vec![Quest {
                     id: "main_01".to_string(),
-                    title: "Find the AI Core".to_string(),
+                    title: "Explore and locate Sector Key".to_string(),
                     completed: false,
                 }],
                 evading: false,
                 max_inventory: 12,
             },
-            current_floor: floor,
+            current_floor: DungeonFloor::new(40, 20),
         }
     }
 }

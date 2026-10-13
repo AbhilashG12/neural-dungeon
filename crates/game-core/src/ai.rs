@@ -1,9 +1,30 @@
 use crate::action::ACTION_COST;
 use crate::state::GameState;
 use crate::world::{EnemyState, Tile};
+
+pub fn update_fov(state: &mut GameState) {
+    let (px, py) = state.player.position;
+    let radius = 6;
+    for y in (py - radius)..=(py + radius) {
+        for x in (px - radius)..=(px + radius) {
+            let dist_sq = (px - x) * (px - x) + (py - y) * (py - y);
+            if dist_sq <= radius * radius {
+                if x >= 0
+                    && y >= 0
+                    && x < state.current_floor.width as i32
+                    && y < state.current_floor.height as i32
+                {
+                    let idx = state.current_floor.idx(x, y);
+                    state.current_floor.explored[idx] = true;
+                }
+            }
+        }
+    }
+}
+
 pub fn process_engine_tick(state: &mut GameState) -> Vec<String> {
     let mut logs = Vec::new();
-
+    update_fov(state);
     let (px, py) = state.player.position;
     let radius = 6;
     for y in (py - radius)..=(py + radius) {
@@ -51,7 +72,7 @@ fn execute_enemy_fsm(state: &mut GameState, enemy_idx: usize) -> Option<String> 
     let ex = state.current_floor.enemies[enemy_idx].position.0;
     let ey = state.current_floor.enemies[enemy_idx].position.1;
 
-    let dist = ((px - ex).abs() + (py - ey).abs()) as i32; // Manhattan distance
+    let dist = ((px - ex).abs() + (py - ey).abs()) as i32;
     let aggro = state.current_floor.enemies[enemy_idx].aggro_range;
     let name = state.current_floor.enemies[enemy_idx].name.clone();
 
@@ -66,80 +87,13 @@ fn execute_enemy_fsm(state: &mut GameState, enemy_idx: usize) -> Option<String> 
         }
         EnemyState::Chasing => {
             if dist == 1 {
-                // Adjacent! Transition to telegraphing a heavy attack.
                 state.current_floor.enemies[enemy_idx].state = EnemyState::Telegraphing {
                     target_pos: (px, py),
                     damage: 20,
                 };
                 return Some(format!("{} is preparing to strike!", name));
             } else if dist <= aggro * 2 {
-                let dx = if px > ex {
-                    1
-                } else if px < ex {
-                    -1
-                } else {
-                    0
-                };
-                let dy = if py > ey {
-                    1
-                } else if py < ey {
-                    -1
-                } else {
-                    0
-                };
-
-                let mut moved = false;
-
-                // Try moving X if we need to
-                if dx != 0
-                    && state
-                        .current_floor
-                        .get_tile(ex + dx, ey)
-                        .unwrap_or(Tile::Wall)
-                        == Tile::Floor
-                {
-                    state.current_floor.enemies[enemy_idx].position = (ex + dx, ey);
-                    moved = true;
-                }
-
-                // Try moving Y if we didn't move X and need to
-                if !moved
-                    && dy != 0
-                    && state
-                        .current_floor
-                        .get_tile(ex, ey + dy)
-                        .unwrap_or(Tile::Wall)
-                        == Tile::Floor
-                {
-                    state.current_floor.enemies[enemy_idx].position = (ex, ey + dy);
-                }
-            } else {
-                state.current_floor.enemies[enemy_idx].state = EnemyState::Idle;
-            }
-        }
-        EnemyState::Telegraphing { target_pos, damage } => {
-            state.current_floor.enemies[enemy_idx].state = EnemyState::Chasing; // Reset state
-
-            if state.player.position == target_pos {
-                if state.player.evading {
-                    return Some(format!("{} attacks, but you evaded gracefully!", name));
-                } else {
-                    state.player.hp = state.player.hp.saturating_sub(damage);
-                    return Some(format!("{} strikes you for {} damage!", name, damage));
-                }
-            } else {
-                return Some(format!("{} swings at empty air!", name));
-            }
-        }
-        EnemyState::Chasing => {
-            if dist == 1 {
-                state.current_floor.enemies[enemy_idx].state = EnemyState::Telegraphing {
-                    target_pos: (px, py),
-                    damage: 20,
-                };
-                return Some(format!("{} is preparing to strike!", name));
-            } else if dist <= aggro * 2 {
-                // BFS Pathfinding (Simplified A* for unweighted grids)
+                // BFS Pathfinding
                 let mut queue = std::collections::VecDeque::new();
                 let mut came_from = std::collections::HashMap::new();
                 let start = (ex, ey);
@@ -165,7 +119,6 @@ fn execute_enemy_fsm(state: &mut GameState, enemy_idx: usize) -> Option<String> 
                     }
                 }
 
-                // Trace back path
                 let mut current = (px, py);
                 let mut next_step = start;
                 while let Some(&prev) = came_from.get(&current) {
@@ -176,7 +129,6 @@ fn execute_enemy_fsm(state: &mut GameState, enemy_idx: usize) -> Option<String> 
                     current = prev;
                 }
 
-                // Prevent moving into other entities
                 if state
                     .current_floor
                     .get_enemy_at(next_step.0, next_step.1)
@@ -187,6 +139,19 @@ fn execute_enemy_fsm(state: &mut GameState, enemy_idx: usize) -> Option<String> 
                 }
             } else {
                 state.current_floor.enemies[enemy_idx].state = EnemyState::Idle;
+            }
+        }
+        EnemyState::Telegraphing { target_pos, damage } => {
+            state.current_floor.enemies[enemy_idx].state = EnemyState::Chasing;
+            if state.player.position == target_pos {
+                if state.player.evading {
+                    return Some(format!("{} attacks, but you evaded gracefully!", name));
+                } else {
+                    state.player.hp = state.player.hp.saturating_sub(damage);
+                    return Some(format!("{} strikes you for {} damage!", name, damage));
+                }
+            } else {
+                return Some(format!("{} swings at empty air!", name));
             }
         }
     }
