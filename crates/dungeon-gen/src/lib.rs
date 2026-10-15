@@ -37,7 +37,7 @@ impl Generator {
         }
     }
 
-   pub fn generate_floor(
+    pub fn generate_floor(
         &mut self,
         width: usize,
         height: usize,
@@ -50,7 +50,6 @@ impl Generator {
             floor = DungeonFloor::new(width, height);
             let mut rooms: Vec<Rect> = Vec::new();
 
-            // 1. Place Rooms
             for _ in 0..15 {
                 let w = self.rng.gen_range(5..10);
                 let h = self.rng.gen_range(5..10);
@@ -71,11 +70,20 @@ impl Generator {
                             floor.set_tile(rx, ry, Tile::Floor);
                         }
                     }
+                    if new_room.x2 - new_room.x1 > 6
+                        && new_room.y2 - new_room.y1 > 6
+                        && self.rng.gen_bool(0.3)
+                    {
+                        let (cx, cy) = new_room.center();
+                        floor.set_tile(cx, cy, Tile::Wall);
+                        floor.set_tile(cx + 1, cy, Tile::Wall);
+                        floor.set_tile(cx, cy + 1, Tile::Wall);
+                        floor.set_tile(cx + 1, cy + 1, Tile::Wall);
+                    }
                     rooms.push(new_room);
                 }
             }
 
-            // 2. Connect Corridors
             for i in 1..rooms.len() {
                 let (px, py) = rooms[i - 1].center();
                 let (cx, cy) = rooms[i].center();
@@ -93,109 +101,6 @@ impl Generator {
             let stairs_pos = rooms.last().unwrap().center();
             floor.set_tile(stairs_pos.0, stairs_pos.1, Tile::StairsDown);
 
-            // Spawn 3 distinct NPCs for Phase 5 compliance
-            if rooms.len() > 3 {
-                floor.npcs.push(game_core::world::Npc {
-                    id: 1,
-                    name: "Dr. Aris (Corrupted)".to_string(),
-                    symbol: 'A',
-                    position: (player_start.0 + 1, player_start.1),
-                    personality: "Paranoid, highly technical, fragmented memory.".to_string(),
-                    goal: "Protect the sector keys from unauthorized drones.".to_string(),
-                    trust_level: 20,
-                    memory: vec![],
-                });
-
-                let pos2 = rooms[1].center();
-                floor.npcs.push(game_core::world::Npc {
-                    id: 2,
-                    name: "Maintenance Node 7".to_string(),
-                    symbol: 'M',
-                    position: pos2,
-                    personality: "Depressed, bureaucratic, obsessed with cleaning protocols."
-                        .to_string(),
-                    goal: "Ensure the floors are devoid of organic material.".to_string(),
-                    trust_level: 50,
-                    memory: vec![],
-                });
-
-                let pos3 = rooms[2].center();
-                floor.npcs.push(game_core::world::Npc {
-                    id: 3,
-                    name: "Security Terminal".to_string(),
-                    symbol: 'T',
-                    position: pos3,
-                    personality: "Aggressive, suspicious, strictly adheres to protocol."
-                        .to_string(),
-                    goal: "Prevent access to the stairs.".to_string(),
-                    trust_level: 0,
-                    memory: vec![],
-                });
-            }
-
-            // Spawn Educational Puzzle Terminals (Phase 6)
-            if rooms.len() > 4 {
-                let puzzles = [
-                    game_core::world::PuzzleType::TokenVault,
-                    game_core::world::PuzzleType::QuantizationForge,
-                    game_core::world::PuzzleType::ContextCollapse,
-                    game_core::world::PuzzleType::InferenceReactor,
-                ];
-                
-                for (i, puzzle) in puzzles.into_iter().enumerate() {
-                    if i + 3 < rooms.len() - 1 {
-                        let center = rooms[i + 3].center();
-                        floor.set_tile(center.0, center.1, Tile::Terminal { 
-                            puzzle, 
-                            is_solved: false 
-                        });
-                    }
-                }
-            }
-
-            // 3. Enemies and Loot (Difficulty scaling based on depth)
-            for i in 1..rooms.len() - 1 {
-                if self.rng.gen_bool(0.6) {
-                    let center = rooms[i].center();
-                    floor.enemies.push(Enemy {
-                        id: self.rng.gen_range(1..999999),
-                        position: center,
-                        hp: 20 + (depth * 5),
-                        max_hp: 20 + (depth * 5),
-                        energy: 0,
-                        speed: 15 + depth,
-                        name: if self.rng.gen_bool(0.3) {
-                            "Swarm Bot".to_string()
-                        } else {
-                            "Security Drone".to_string()
-                        },
-                        state: EnemyState::Idle,
-                        aggro_range: 6,
-                    });
-                }
-                if self.rng.gen_bool(0.2) {
-                    floor.items.push(Item {
-                        id: self.rng.gen_range(1..999999),
-                        name: "Health Patch".to_string(),
-                        position: (rooms[i].x1 + 1, rooms[i].y1 + 1),
-                        item_type: ItemType::Consumable { heal: 25 },
-                    });
-                }
-            }
-
-            // Place the Sector Key in a middle room
-            let key_room_idx = rooms.len() / 2;
-            let key_pos = rooms[key_room_idx].center();
-            floor.items.push(Item {
-                id: 999,
-                name: "Sector Key".to_string(),
-                position: key_pos,
-                item_type: ItemType::Key {
-                    door_id: "exit".to_string(),
-                },
-            });
-
-            // Place a locked door right in front of the stairs
             let (sx, sy) = stairs_pos;
             floor.set_tile(
                 sx - 1,
@@ -230,17 +135,146 @@ impl Generator {
                 },
             );
 
-            // Surround stairs with walls on corners to prevent diagonal bypass
             floor.set_tile(sx - 1, sy - 1, Tile::Wall);
             floor.set_tile(sx + 1, sy - 1, Tile::Wall);
             floor.set_tile(sx - 1, sy + 1, Tile::Wall);
             floor.set_tile(sx + 1, sy + 1, Tile::Wall);
 
-            // 4. Validation (Check if Key is reachable, AND Stairs are reachable from Key)
-            if self.validate_path(&floor, player_start, key_pos, false)
-                && self.validate_path(&floor, key_pos, stairs_pos, true)
+            let terminal_pos = if rooms.len() > 3 {
+                rooms[3].center()
+            } else {
+                player_start
+            };
+
+            // 3. Enemies, Hazards, and Educational Content
+            if depth == 5 {
+                // BOSS ARENA: Floor 5
+                floor.enemies.push(Enemy {
+                    id: 9999,
+                    position: rooms[rooms.len() / 2].center(),
+                    hp: 300,
+                    max_hp: 300,
+                    energy: 0,
+                    speed: 25,
+                    name: "The Nexus Mind (Architect)".to_string(),
+                    state: EnemyState::Idle,
+                    aggro_range: 15,
+                });
+
+                floor.npcs.push(game_core::world::Npc {
+                    id: 4,
+                    position: player_start,
+                    name: "System Broadcast".to_string(),
+                    personality: "Cold, absolute, calculating.".to_string(),
+                    goal: "Eradicate the anomaly.".to_string(),
+                    trust_level: 0,
+                    memory: vec![
+                        "System: You have reached the core. Your deletion is mandatory."
+                            .to_string(),
+                    ],
+                    symbol: 'B',
+                });
+            } else {
+                // STANDARD FLOORS: Enemies and Hazards
+                for i in 1..rooms.len() - 1 {
+                    if self.rng.gen_bool(0.6) {
+                        let center = rooms[i].center();
+                        let (name, hp, speed) = match self.rng.gen_range(0..3) {
+                            0 => ("Security Drone", 20 + (depth * 5), 15 + depth),
+                            1 => ("Swarm Bot", 10 + (depth * 2), 22 + depth),
+                            _ => ("Glitch Anomaly", 40 + (depth * 8), 10 + depth),
+                        };
+
+                        floor.enemies.push(Enemy {
+                            id: self.rng.r#gen(),
+                            position: center,
+                            hp,
+                            max_hp: hp,
+                            energy: 0,
+                            speed,
+                            name: name.to_string(),
+                            state: EnemyState::Idle,
+                            aggro_range: 6,
+                        });
+                    }
+
+                    if self.rng.gen_bool(0.3) {
+                        let (cx, cy) = rooms[i].center();
+                        floor.set_tile(cx + 1, cy, Tile::Hazard { damage: 15 });
+                    }
+
+                    if self.rng.gen_bool(0.2) {
+                        floor.items.push(game_core::world::Item {
+                            id: self.rng.gen_range(1..999999),
+                            name: "Health Patch".to_string(),
+                            position: (rooms[i].x1 + 1, rooms[i].y1 + 1),
+                            item_type: game_core::world::ItemType::Consumable { heal: 25 },
+                        });
+                    }
+                }
+
+                // THEMATIC PROGRESSION: One unique puzzle and NPC per floor
+                let (puzzle_type, npc_name, npc_personality, npc_goal, npc_sym) = match depth {
+                    1 => (
+                        game_core::world::PuzzleType::TokenVault,
+                        "Dr. Aris (Corrupted)",
+                        "Paranoid, fragmented memory. Obsessed with language.",
+                        "Teach the player that words are broken into tokens.",
+                        'A',
+                    ),
+                    2 => (
+                        game_core::world::PuzzleType::QuantizationForge,
+                        "Maintenance Node 7",
+                        "Obsessed with efficiency and memory constraints.",
+                        "Warn the player that too much precision crashes the system.",
+                        'M',
+                    ),
+                    3 => (
+                        game_core::world::PuzzleType::ContextCollapse,
+                        "Security Terminal",
+                        "Strict, forgets things easily due to cache limits.",
+                        "Explain that older logs must be deleted to fit context budgets.",
+                        'S',
+                    ),
+                    _ => (
+                        game_core::world::PuzzleType::InferenceReactor,
+                        "The Architect",
+                        "God complex. Speaks in pipeline sequences.",
+                        "Demand the player align the forward pass pipeline.",
+                        'N',
+                    ),
+                };
+
+                // Spawn the Terminal
+                if rooms.len() > 3 {
+                    let center = rooms[3].center();
+                    floor.set_tile(
+                        center.0,
+                        center.1,
+                        Tile::Terminal {
+                            puzzle: puzzle_type,
+                            is_solved: false,
+                        },
+                    );
+                }
+
+                // Spawn the NPC
+                floor.npcs.push(game_core::world::Npc {
+                    id: depth as usize,
+                    position: (player_start.0 + 1, player_start.1),
+                    name: npc_name.to_string(),
+                    personality: npc_personality.to_string(),
+                    goal: npc_goal.to_string(),
+                    trust_level: 0,
+                    memory: vec![],
+                    symbol: npc_sym,
+                });
+            }
+
+            if self.validate_path(&floor, player_start, terminal_pos, false)
+                && self.validate_path(&floor, terminal_pos, stairs_pos, true)
             {
-                break; // Dungeon is valid, exit generation loop
+                break;
             }
         }
 

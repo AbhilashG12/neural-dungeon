@@ -85,15 +85,29 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
             }
 
             state.player.position = (new_x, new_y);
+            if let Tile::Hazard { damage } = tile {
+                state.player.hp = state.player.hp.saturating_sub(damage as u32);
+                logs.push(format!(
+                    "You stepped on a hazard and took {} damage!",
+                    damage
+                ));
+            }
             state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
         }
         GameAction::Attack {
             target_id,
             attack_type,
         } => {
+            let base_dmg = if let Some(w) = &state.player.weapon {
+                10 + w.bonus_damage
+            } else {
+                10
+            };
+            let total_dmg = base_dmg + (state.player.level as i32 * 2);
+
             let (damage, cost) = match attack_type {
-                AttackType::Strike => (10, ACTION_COST),
-                AttackType::Overload => (25, ACTION_COST + 40),
+                AttackType::Strike => (total_dmg, ACTION_COST),
+                AttackType::Overload => (total_dmg * 2, ACTION_COST + 40),
             };
 
             if state.player.energy < cost {
@@ -106,19 +120,56 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                 .iter()
                 .position(|e| e.id == target_id)
                 .ok_or(GameError::InvalidTarget)?;
+
             let enemy = &mut state.current_floor.enemies[enemy_idx];
 
-            enemy.hp = enemy.hp.saturating_sub(damage);
+            // Replaced saturating_sub(damage as u32) with a safe max comparison for i32
+            enemy.hp = std::cmp::max(0, enemy.hp - damage as u32);
             logs.push(format!("You hit {} for {} damage.", enemy.name, damage));
 
             if enemy.hp == 0 {
-                logs.push(format!("{} was destroyed! It dropped loot.", enemy.name));
-                state.current_floor.items.push(crate::world::Item {
-                    id: state.turn_count as usize,
-                    name: "Health Patch".to_string(),
-                    position: enemy.position,
-                    item_type: crate::world::ItemType::Consumable { heal: 50 },
-                });
+                if enemy.id == 9999 {
+                    logs.push("========================================".to_string());
+                    logs.push("VICTORY! The Nexus Mind is shattered.".to_string());
+                    logs.push("Sector 7 is secure. The simulation ends.".to_string());
+                    logs.push("========================================".to_string());
+                } else {
+                    let xp_gained = 50 + (state.floor_number * 10);
+                    state.player.xp += xp_gained;
+                    logs.push(format!(
+                        "{} destroyed! Gained {} XP.",
+                        enemy.name, xp_gained
+                    ));
+
+                    if state.player.xp >= state.player.level * 150 {
+                        state.player.xp -= state.player.level * 150;
+                        state.player.level += 1;
+                        state.player.max_hp += 20;
+                        state.player.hp = state.player.max_hp;
+                        logs.push(format!(
+                            "LEVEL UP! You are now Level {}.",
+                            state.player.level
+                        ));
+                    }
+                }
+
+                let item_drop = if state.player.level > 2 && state.turn_count % 3 == 0 {
+                    crate::world::Item {
+                        id: state.turn_count as usize,
+                        name: "Thermal Katana".to_string(),
+                        position: enemy.position,
+                        item_type: crate::world::ItemType::Weapon { damage: 15 },
+                    }
+                } else {
+                    crate::world::Item {
+                        id: state.turn_count as usize,
+                        name: "Health Patch".to_string(),
+                        position: enemy.position,
+                        item_type: crate::world::ItemType::Consumable { heal: 50 },
+                    }
+                };
+
+                state.current_floor.items.push(item_drop);
                 state.current_floor.enemies.remove(enemy_idx);
             }
             state.player.energy = state.player.energy.saturating_sub(cost);
@@ -244,14 +295,38 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
             if index >= state.player.inventory.len() {
                 return Err(GameError::InvalidTarget);
             }
-            if let crate::world::ItemType::Consumable { heal } =
-                state.player.inventory[index].item_type
-            {
-                state.player.hp = std::cmp::min(state.player.max_hp, state.player.hp + heal);
-                let item = state.player.inventory.remove(index);
-                logs.push(format!("You used {} and recovered {} HP.", item.name, heal));
-                state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
+
+            let item = state.player.inventory.remove(index);
+
+            match item.item_type {
+                crate::world::ItemType::Consumable { heal } => {
+                    state.player.hp = std::cmp::min(state.player.max_hp, state.player.hp + heal);
+                    logs.push(format!("You used {} and recovered {} HP.", item.name, heal));
+                }
+                crate::world::ItemType::Weapon { damage } => {
+                    // Equip weapon and place old weapon back into inventory
+                    if let Some(old_weapon) = state.player.weapon.take() {
+                        state.player.inventory.push(crate::world::Item {
+                            id: 999,
+                            name: old_weapon.name,
+                            position: (0, 0),
+                            item_type: crate::world::ItemType::Weapon {
+                                damage: old_weapon.bonus_damage,
+                            },
+                        });
+                    }
+                    state.player.weapon = Some(crate::state::Weapon {
+                        name: item.name.clone(),
+                        bonus_damage: damage,
+                    });
+                    logs.push(format!("Equipped {}. Damage increased.", item.name));
+                }
+                _ => {
+                    state.player.inventory.push(item);
+                    return Err(GameError::InvalidTarget);
+                }
             }
+            state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
         }
     }
     Ok(logs)

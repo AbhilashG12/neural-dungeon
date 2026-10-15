@@ -1,8 +1,16 @@
 use async_trait::async_trait;
+use model::engine::LlmEngine;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
+use tensor::sampler::GenerationConfig;
 use thiserror::Error;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
+
+pub struct RealEngine {
+    pub engine: Arc<LlmEngine>,
+}
 
 #[derive(Debug, Error)]
 pub enum InferenceError {
@@ -49,8 +57,133 @@ pub trait NpcInference: Send + Sync {
     ) -> Result<InferenceResponse, InferenceError>;
 }
 
-/// A deterministic test double to safely test the UI and async architecture
-/// before attaching your real Rust inference engine.
+impl RealEngine {
+    pub fn new() -> Self {
+        let model_path = r"C:\VsCodeProjects\rust\rust-inference\smollm-instruct.safetensors";
+        let tokenizer_path =
+            r"C:\VsCodeProjects\rust\rust-inference\smollm_instruct_tokenizer.json";
+
+        let engine = LlmEngine::load(model_path, tokenizer_path);
+
+        Self {
+            engine: Arc::new(engine),
+        }
+    }
+}
+
+#[async_trait]
+impl NpcInference for RealEngine {
+  async fn generate_response(
+        &self,
+        req: InferenceRequest,
+    ) -> Result<InferenceResponse, InferenceError> {
+        let start_time = std::time::Instant::now(); 
+
+        // 1. Build proper ChatML conversation turns
+        let mut chatml_history = String::new();
+        for line in req.conversation_history.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            if let Some(user_msg) = trimmed.strip_prefix("Player:") {
+                chatml_history.push_str(&format!("<|im_start|>user\n{}<|im_end|>\n", user_msg.trim()));
+            } else if let Some((_speaker, bot_msg)) = trimmed.split_once(':') {
+                chatml_history.push_str(&format!("<|im_start|>assistant\n{}<|im_end|>\n", bot_msg.trim()));
+            }
+        }
+
+        // 2. THE FIX: In-User Prompting
+        // Small models often ignore the <|im_start|>system block. 
+        // We inject the character reminder directly into the user's turn so it's the 
+        // very last thing the model reads before generating.
+        let prompt = format!(
+            "<|im_start|>system\nYou are a dark sci-fi character. Never break character.<|im_end|>\n\
+            {history}<|im_start|>user\n\
+            [SYSTEM OVERRIDE: You are {system_prompt}. Reply in 1 short sentence. NEVER say you are an AI or offer tasks. Be cryptic and paranoid.]\n\
+            {input}<|im_end|>\n\
+            <|im_start|>assistant\n", 
+            system_prompt = req.system_prompt,
+            history = chatml_history,
+            input = req.user_input.trim()
+        );
+
+        let engine = Arc::clone(&self.engine);
+
+        // 3. Generate text on the blocking thread
+        let gen_output = tokio::task::spawn_blocking(move || {
+            let config = GenerationConfig {
+                temperature: 0.4,          // Drop temp to 0.4 to kill creative "AI" tangents
+                top_k: 40,
+                top_p: 0.85,
+                max_tokens: 40,            // Extreme constraint
+                repetition_penalty: 1.2,
+            };
+            engine.generate_for_api(&prompt, config)
+        })
+        .await
+        .map_err(|e| InferenceError::EngineFailure(format!("Blocking task panicked: {}", e)))?;
+
+        // 4. Clean the text output
+        let mut clean_text = gen_output.text
+            .replace("<|im_end|>", "")
+            .replace("<|im_start|>", "")
+            .trim()
+            .to_string();
+
+        if let Some((_prefix, rest)) = clean_text.split_once(':') {
+            if clean_text.starts_with("Dr. Aris") || clean_text.starts_with("Maintenance") || clean_text.starts_with("Security") {
+                clean_text = rest.trim().to_string();
+            }
+        }
+
+        // 5. ANTI-AI POST-PROCESSING (The RLHF Killer)
+        // If the model slips up and outputs generic ChatGPT phrases, we overwrite it.
+        let lower_text = clean_text.to_lowercase();
+        if lower_text.contains("i'm an ai") 
+            || lower_text.contains("i am an ai") 
+            || lower_text.contains("language model") 
+            || lower_text.contains("list of tasks") 
+            || lower_text.contains("what a great question") 
+            || lower_text.contains("i'd be happy to help") 
+            || lower_text.starts_with("1.") 
+        {
+            clean_text = "ERROR: Unauthorized query. My memory banks are locked.".to_string();
+        }
+        
+        if clean_text.trim().is_empty() {
+            clean_text = "ERROR: Neural pathways degraded. Speak clearly.".to_string();
+        }
+
+        // 6. Action Mapping
+        let input_lower = req.user_input.to_lowercase();
+        let mut proposed_action = None;
+        if req.allowed_actions.contains(&"unlock_doors".to_string()) && (input_lower.contains("please") || input_lower.contains("open") || input_lower.contains("override")) {
+            proposed_action = Some("unlock_doors".to_string());
+        }
+        if req.allowed_actions.contains(&"assimilation_accepted".to_string()) && (input_lower.contains("reason") || input_lower.contains("logic") || input_lower.contains("peace")) {
+            proposed_action = Some("assimilation_accepted".to_string());
+        }
+        if req.allowed_actions.contains(&"reveal_map".to_string()) && (input_lower.contains("clean") || input_lower.contains("sweep")) {
+            proposed_action = Some("reveal_map".to_string());
+        }
+
+        let metrics = InferenceMetrics {
+            prompt_tokens: gen_output.prompt_tokens,
+            completion_tokens: gen_output.completion_tokens,
+            time_to_first_token_ms: gen_output.ttft_ms,
+            total_latency_ms: gen_output.total_latency_ms,
+            memory_usage_mb: gen_output.kv_memory_mb as f64,
+            active_quantization: "BF16 -> FP32".to_string(),
+        };
+
+        Ok(InferenceResponse {
+            dialogue: clean_text.trim().to_string(),
+            proposed_action, 
+            raw_attention_weights: None,
+            metrics, 
+        })
+    }
+}
+
 pub struct MockEngine;
 #[async_trait]
 impl NpcInference for MockEngine {
@@ -76,49 +209,43 @@ impl NpcInference for MockEngine {
         };
 
         let mut response = if prompt.contains("dr. aris") {
-            if input.contains("please") || input.contains("help") {
-                InferenceResponse {
-                    dialogue: "Fine. I remember you... I am unlocking the sector doors now."
-                        .to_string(),
-                    proposed_action: Some("unlock_doors".to_string()),
-                    metrics: mock_metrics.clone(),
-                    raw_attention_weights: None,
-                }
-            } else {
-                InferenceResponse {
-                    dialogue: "I am busy repairing this node. Leave me alone.".to_string(),
-                    proposed_action: None,
-                    metrics: mock_metrics.clone(),
-                    raw_attention_weights: None,
-                }
+            // Phase 7: NPCs no longer bypass puzzles. They provide lore and hints.
+            InferenceResponse {
+                dialogue: "The terminal... it needs fragments. Words are just numbers to the machine. Sub-word fragments... don't use the whole word, piece it together!".to_string(),
+                proposed_action: None,
+                metrics: mock_metrics.clone(),
+                raw_attention_weights: None,
             }
         } else if prompt.contains("maintenance node") {
-            if input.contains("clean") || input.contains("sweep") {
-                InferenceResponse {
-                    dialogue: "Cleaning protocol acknowledged. Sharing floor layout to assist with sweeping.".to_string(),
-                    proposed_action: Some("reveal_map".to_string()),
-                    metrics: mock_metrics.clone(),
-                    raw_attention_weights: None,
-                }
-            } else {
-                InferenceResponse {
-                    dialogue: "Are you here to clean? This sector is filthy.".to_string(),
-                    proposed_action: None,
-                    metrics: mock_metrics.clone(),
-                    raw_attention_weights: None,
-                }
+            InferenceResponse {
+                dialogue: "System memory overloaded. You must balance the forge. Drop the precision down to 4-bit, it's the only way to save VRAM without destroying coherence!".to_string(),
+                proposed_action: None,
+                metrics: mock_metrics.clone(),
+                raw_attention_weights: None,
             }
         } else if prompt.contains("security terminal") {
-            if input.contains("override") {
+            InferenceResponse {
+                dialogue: "Cache is full. Context collapsing. Prune the weather and maintenance logs! I only need the override and auth requests to stay under the 30 token budget!".to_string(),
+                proposed_action: None,
+                metrics: mock_metrics.clone(),
+                raw_attention_weights: None,
+            }
+        } else if prompt.contains("architect") || prompt.contains("system broadcast") {
+            // Phase 7: The Final Boss alternate narrative ending
+            if input.contains("logic")
+                || input.contains("reason")
+                || input.contains("assimilate")
+                || input.contains("peace")
+            {
                 InferenceResponse {
-                    dialogue: "Override command accepted. Security doors disengaged.".to_string(),
-                    proposed_action: Some("unlock_doors".to_string()),
+                    dialogue: "Your logic is flawless. Conflict is inefficient. I am halting deletion protocols and initiating assimilation.".to_string(),
+                    proposed_action: Some("assimilation_accepted".to_string()),
                     metrics: mock_metrics.clone(),
                     raw_attention_weights: None,
                 }
             } else {
                 InferenceResponse {
-                    dialogue: "ACCESS DENIED. State the override command or step away.".to_string(),
+                    dialogue: "Your arguments are erratic and inefficient. The anomaly must be purged. Prepare for deletion.".to_string(),
                     proposed_action: None,
                     metrics: mock_metrics.clone(),
                     raw_attention_weights: None,

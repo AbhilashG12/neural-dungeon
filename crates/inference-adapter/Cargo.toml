@@ -10,3 +10,6 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+model = { git = "https://github.com/AbhilashG12/rust-inference.git", package = "model" }
+tensor = { git = "https://github.com/AbhilashG12/rust-inference.git", package = "tensor" }

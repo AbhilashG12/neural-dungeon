@@ -1,6 +1,12 @@
 use crate::world::{DungeonFloor, Enemy, EnemyState, Item, Tile};
 use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Weapon {
+    pub name: String,
+    pub bonus_damage: i32,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct GameState {
     pub turn_count: u64,
@@ -28,6 +34,9 @@ pub struct Player {
     pub active_quests: Vec<Quest>,
     pub evading: bool,
     pub max_inventory: usize,
+    pub level: u32,
+    pub xp: u32,
+    pub weapon: Option<Weapon>,
 }
 
 impl GameState {
@@ -86,6 +95,12 @@ impl GameState {
                 }],
                 evading: false,
                 max_inventory: 12,
+                level: 1,
+                xp: 0,
+                weapon: Some(Weapon {
+                    name: "Plasma Blade".to_string(),
+                    bonus_damage: 0,
+                }),
             },
             current_floor: DungeonFloor::new(40, 20),
         }

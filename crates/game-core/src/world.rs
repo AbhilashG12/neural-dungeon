@@ -7,9 +7,10 @@ pub enum Tile {
     Door { is_open: bool, locked: bool },
     StairsDown,
     Terminal { puzzle: PuzzleType, is_solved: bool },
+    Hazard { damage: i32 },
 }
 
-#[derive(Serialize, Deserialize,Copy, Clone,Eq, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Copy, Clone, Eq, Debug, PartialEq)]
 pub enum PuzzleType {
     TokenVault,
     QuantizationForge,
@@ -49,10 +50,11 @@ pub struct Enemy {
     pub aggro_range: i32,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ItemType {
     Consumable { heal: u32 },
     Key { door_id: String },
+    Weapon { damage: i32 },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
