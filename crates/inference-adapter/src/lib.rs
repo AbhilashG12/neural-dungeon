@@ -181,8 +181,7 @@ impl NpcInference for RealEngine {
             raw_attention_weights: None,
             metrics, 
         })
-    }
-}
+    }}
 
 pub struct MockEngine;
 #[async_trait]
