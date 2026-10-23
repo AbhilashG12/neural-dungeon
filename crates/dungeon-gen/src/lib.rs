@@ -37,7 +37,7 @@ impl Generator {
         }
     }
 
-    pub fn generate_floor(
+   pub fn generate_floor(
         &mut self,
         width: usize,
         height: usize,
@@ -45,16 +45,20 @@ impl Generator {
     ) -> (DungeonFloor, (i32, i32)) {
         let mut floor;
         let mut player_start;
+        let mut terminal_pos;
+        let mut stairs_pos;
 
         loop {
+            // Scale grid size to fill the viewport
             floor = DungeonFloor::new(width, height);
             let mut rooms: Vec<Rect> = Vec::new();
 
-            for _ in 0..15 {
-                let w = self.rng.gen_range(5..10);
-                let h = self.rng.gen_range(5..10);
-                let x = self.rng.gen_range(1..(width as i32 - w - 1));
-                let y = self.rng.gen_range(1..(height as i32 - h - 1));
+            // Increased room count from 15 to 30 for dense exploration
+            for _ in 0..30 {
+                let w = self.rng.gen_range(5..11);
+                let h = self.rng.gen_range(4..8);
+                let x = self.rng.gen_range(1..((width) as i32 - w - 1));
+                let y = self.rng.gen_range(1..((height) as i32 - h - 1));
                 let new_room = Rect::new(x, y, w, h);
 
                 let mut failed = false;
@@ -70,9 +74,10 @@ impl Generator {
                             floor.set_tile(rx, ry, Tile::Floor);
                         }
                     }
+                    // Room variations (Pillars) for tactical cover
                     if new_room.x2 - new_room.x1 > 6
                         && new_room.y2 - new_room.y1 > 6
-                        && self.rng.gen_bool(0.3)
+                        && self.rng.gen_bool(0.4)
                     {
                         let (cx, cy) = new_room.center();
                         floor.set_tile(cx, cy, Tile::Wall);
@@ -82,6 +87,10 @@ impl Generator {
                     }
                     rooms.push(new_room);
                 }
+            }
+
+            if rooms.is_empty() {
+                continue;
             }
 
             for i in 1..rooms.len() {
@@ -98,49 +107,21 @@ impl Generator {
             }
 
             player_start = rooms[0].center();
-            let stairs_pos = rooms.last().unwrap().center();
+            stairs_pos = rooms.last().unwrap().center();
             floor.set_tile(stairs_pos.0, stairs_pos.1, Tile::StairsDown);
 
             let (sx, sy) = stairs_pos;
-            floor.set_tile(
-                sx - 1,
-                sy,
-                Tile::Door {
-                    is_open: false,
-                    locked: true,
-                },
-            );
-            floor.set_tile(
-                sx + 1,
-                sy,
-                Tile::Door {
-                    is_open: false,
-                    locked: true,
-                },
-            );
-            floor.set_tile(
-                sx,
-                sy - 1,
-                Tile::Door {
-                    is_open: false,
-                    locked: true,
-                },
-            );
-            floor.set_tile(
-                sx,
-                sy + 1,
-                Tile::Door {
-                    is_open: false,
-                    locked: true,
-                },
-            );
+            floor.set_tile(sx - 1, sy, Tile::Door { is_open: false, locked: true });
+            floor.set_tile(sx + 1, sy, Tile::Door { is_open: false, locked: true });
+            floor.set_tile(sx, sy - 1, Tile::Door { is_open: false, locked: true });
+            floor.set_tile(sx, sy + 1, Tile::Door { is_open: false, locked: true });
 
             floor.set_tile(sx - 1, sy - 1, Tile::Wall);
             floor.set_tile(sx + 1, sy - 1, Tile::Wall);
             floor.set_tile(sx - 1, sy + 1, Tile::Wall);
             floor.set_tile(sx + 1, sy + 1, Tile::Wall);
 
-            let terminal_pos = if rooms.len() > 3 {
+            terminal_pos = if rooms.len() > 3 {
                 rooms[3].center()
             } else {
                 player_start
@@ -175,14 +156,15 @@ impl Generator {
                     symbol: 'B',
                 });
             } else {
-                // STANDARD FLOORS: Enemies and Hazards
+                // STANDARD FLOORS: Dense Enemy & Hazard Population
                 for i in 1..rooms.len() - 1 {
-                    if self.rng.gen_bool(0.6) {
+                    // Increased enemy spawn probability to 80%
+                    if self.rng.gen_bool(0.8) {
                         let center = rooms[i].center();
                         let (name, hp, speed) = match self.rng.gen_range(0..3) {
-                            0 => ("Security Drone", 20 + (depth * 5), 15 + depth),
-                            1 => ("Swarm Bot", 10 + (depth * 2), 22 + depth),
-                            _ => ("Glitch Anomaly", 40 + (depth * 8), 10 + depth),
+                            0 => ("Security Drone Omega", 25 + (depth * 5), 18 + depth),
+                            1 => ("Swarm Interceptor", 12 + (depth * 3), 25 + depth),
+                            _ => ("Neural Stalker", 45 + (depth * 8), 12 + depth),
                         };
 
                         floor.enemies.push(Enemy {
@@ -194,16 +176,16 @@ impl Generator {
                             speed,
                             name: name.to_string(),
                             state: EnemyState::Idle,
-                            aggro_range: 6,
+                            aggro_range: 12,
                         });
                     }
 
-                    if self.rng.gen_bool(0.3) {
+                    if self.rng.gen_bool(0.4) {
                         let (cx, cy) = rooms[i].center();
-                        floor.set_tile(cx + 1, cy, Tile::Hazard { damage: 15 });
+                        floor.set_tile(cx + 1, cy, Tile::Hazard { damage: 20 });
                     }
 
-                    if self.rng.gen_bool(0.2) {
+                    if self.rng.gen_bool(0.25) {
                         floor.items.push(game_core::world::Item {
                             id: self.rng.gen_range(1..999999),
                             name: "Health Patch".to_string(),
@@ -219,7 +201,7 @@ impl Generator {
                         game_core::world::PuzzleType::TokenVault,
                         "Dr. Aris (Corrupted)",
                         "Paranoid, fragmented memory. Obsessed with language.",
-                        "Teach the player that words are broken into tokens.",
+                        "Warn the intruder that words are broken into tokens.",
                         'A',
                     ),
                     2 => (
@@ -246,17 +228,14 @@ impl Generator {
                 };
 
                 // Spawn the Terminal
-                if rooms.len() > 3 {
-                    let center = rooms[3].center();
-                    floor.set_tile(
-                        center.0,
-                        center.1,
-                        Tile::Terminal {
-                            puzzle: puzzle_type,
-                            is_solved: false,
-                        },
-                    );
-                }
+                floor.set_tile(
+                    terminal_pos.0,
+                    terminal_pos.1,
+                    Tile::Terminal {
+                        puzzle: puzzle_type,
+                        is_solved: false,
+                    },
+                );
 
                 // Spawn the NPC
                 floor.npcs.push(game_core::world::Npc {

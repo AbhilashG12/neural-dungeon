@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tensor::sampler::GenerationConfig;
 use thiserror::Error;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub struct RealEngine {
     pub engine: Arc<LlmEngine>,
@@ -55,6 +54,12 @@ pub trait NpcInference: Send + Sync {
         &self,
         req: InferenceRequest,
     ) -> Result<InferenceResponse, InferenceError>;
+
+    async fn generate_streaming(
+        &self,
+        req: InferenceRequest,
+        token_tx: UnboundedSender<String>,
+    ) -> Result<InferenceResponse, InferenceError>;
 }
 
 impl RealEngine {
@@ -73,34 +78,57 @@ impl RealEngine {
 
 #[async_trait]
 impl NpcInference for RealEngine {
-  async fn generate_response(
+    async fn generate_response(
         &self,
         req: InferenceRequest,
     ) -> Result<InferenceResponse, InferenceError> {
-        let start_time = std::time::Instant::now(); 
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        self.generate_streaming(req, tx).await
+    }
 
-        // 1. Build proper ChatML conversation turns
+    async fn generate_streaming(
+        &self,
+        req: InferenceRequest,
+        token_tx: UnboundedSender<String>,
+    ) -> Result<InferenceResponse, InferenceError> {
+        // 1. Cleanly parse conversation history into ChatML turns (capped at last 4 valid lines)
         let mut chatml_history = String::new();
-        for line in req.conversation_history.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
-            if let Some(user_msg) = trimmed.strip_prefix("Player:") {
-                chatml_history.push_str(&format!("<|im_start|>user\n{}<|im_end|>\n", user_msg.trim()));
-            } else if let Some((_speaker, bot_msg)) = trimmed.split_once(':') {
-                chatml_history.push_str(&format!("<|im_start|>assistant\n{}<|im_end|>\n", bot_msg.trim()));
+        let valid_lines: Vec<&str> = req
+            .conversation_history
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| {
+                !l.is_empty()
+                    && !l.contains("neural link is failing")
+                    && !l.contains("ERROR:")
+                    && !l.contains("[Decrypting signal...]")
+                    && !l.contains("[System:")
+            })
+            .collect();
+
+        let start_idx = valid_lines.len().saturating_sub(4);
+        for line in &valid_lines[start_idx..] {
+            if let Some(player_msg) = line.strip_prefix("Player:") {
+                chatml_history.push_str(&format!(
+                    "<|im_start|>user\n{}<|im_end|>\n",
+                    player_msg.trim()
+                ));
+            } else if let Some((_speaker, npc_msg)) = line.split_once(':') {
+                chatml_history.push_str(&format!(
+                    "<|im_start|>assistant\n{}<|im_end|>\n",
+                    npc_msg.trim()
+                ));
             }
         }
 
-        // 2. THE FIX: In-User Prompting
-        // Small models often ignore the <|im_start|>system block. 
-        // We inject the character reminder directly into the user's turn so it's the 
-        // very last thing the model reads before generating.
+        // 2. Dynamic Architectural Guide Prompt
         let prompt = format!(
-            "<|im_start|>system\nYou are a dark sci-fi character. Never break character.<|im_end|>\n\
-            {history}<|im_start|>user\n\
-            [SYSTEM OVERRIDE: You are {system_prompt}. Reply in 1 short sentence. NEVER say you are an AI or offer tasks. Be cryptic and paranoid.]\n\
-            {input}<|im_end|>\n\
-            <|im_start|>assistant\n", 
+            "<|im_start|>system\n\
+            {system_prompt}\n\
+            Directive: You are an entity inside a dark sci-fi facility. Stay strictly in character and guide the player using your technical knowledge so they can solve this sector's terminal puzzle and obtain the Sector Key. Reply concisely in 1 or 2 complete sentences.<|im_end|>\n\
+            {history}\
+            <|im_start|>user\n{input}<|im_end|>\n\
+            <|im_start|>assistant\n",
             system_prompt = req.system_prompt,
             history = chatml_history,
             input = req.user_input.trim()
@@ -108,62 +136,70 @@ impl NpcInference for RealEngine {
 
         let engine = Arc::clone(&self.engine);
 
-        // 3. Generate text on the blocking thread
+        // 3. Run generation on blocking thread with token streaming callback
         let gen_output = tokio::task::spawn_blocking(move || {
             let config = GenerationConfig {
-                temperature: 0.4,          // Drop temp to 0.4 to kill creative "AI" tangents
-                top_k: 40,
+                temperature: 0.4,
+                top_k: 30,
                 top_p: 0.85,
-                max_tokens: 40,            // Extreme constraint
-                repetition_penalty: 1.2,
+                max_tokens: 65,
+                repetition_penalty: 1.30,
             };
-            engine.generate_for_api(&prompt, config)
+
+            engine.generate_streaming(&prompt, config, move |token| {
+                let _ = token_tx.send(token.to_string());
+            })
         })
         .await
         .map_err(|e| InferenceError::EngineFailure(format!("Blocking task panicked: {}", e)))?;
 
-        // 4. Clean the text output
-        let mut clean_text = gen_output.text
+        // 4. Sanitize final completed dialogue
+        let mut clean_text = gen_output
+            .text
             .replace("<|im_end|>", "")
             .replace("<|im_start|>", "")
+            .lines()
+            .next()
+            .unwrap_or("...signal lost...")
             .trim()
             .to_string();
 
-        if let Some((_prefix, rest)) = clean_text.split_once(':') {
-            if clean_text.starts_with("Dr. Aris") || clean_text.starts_with("Maintenance") || clean_text.starts_with("Security") {
+        // Strip self-prefixed speaker labels if the model outputs "Dr. Aris: ..."
+        if let Some((prefix, rest)) = clean_text.split_once(':') {
+            if prefix.contains("Dr. Aris")
+                || prefix.contains("Maintenance")
+                || prefix.contains("Security")
+                || prefix.contains("Architect")
+            {
                 clean_text = rest.trim().to_string();
             }
         }
 
-        // 5. ANTI-AI POST-PROCESSING (The RLHF Killer)
-        // If the model slips up and outputs generic ChatGPT phrases, we overwrite it.
-        let lower_text = clean_text.to_lowercase();
-        if lower_text.contains("i'm an ai") 
-            || lower_text.contains("i am an ai") 
-            || lower_text.contains("language model") 
-            || lower_text.contains("list of tasks") 
-            || lower_text.contains("what a great question") 
-            || lower_text.contains("i'd be happy to help") 
-            || lower_text.starts_with("1.") 
+        let lower = clean_text.to_lowercase();
+        if lower.contains("human being")
+            || lower.contains("great question")
+            || lower.contains("user of the game")
         {
-            clean_text = "ERROR: Unauthorized query. My memory banks are locked.".to_string();
-        }
-        
-        if clean_text.trim().is_empty() {
-            clean_text = "ERROR: Neural pathways degraded. Speak clearly.".to_string();
+            clean_text =
+                "The neural signal flickers and distorts... focus on the terminal parameters."
+                    .to_string();
         }
 
-        // 6. Action Mapping
+        // 5. Phase 7 Narrative Action Trigger:
+        // Floor 1-3 NPCs provide hints to solve puzzles rather than bypassing doors.
+        // Only The Architect / System Broadcast (Floor 5) triggers peaceful assimilation.
+        let sys_lower = req.system_prompt.to_lowercase();
         let input_lower = req.user_input.to_lowercase();
         let mut proposed_action = None;
-        if req.allowed_actions.contains(&"unlock_doors".to_string()) && (input_lower.contains("please") || input_lower.contains("open") || input_lower.contains("override")) {
-            proposed_action = Some("unlock_doors".to_string());
-        }
-        if req.allowed_actions.contains(&"assimilation_accepted".to_string()) && (input_lower.contains("reason") || input_lower.contains("logic") || input_lower.contains("peace")) {
+
+        if (sys_lower.contains("architect") || sys_lower.contains("system broadcast"))
+            && req.allowed_actions.contains(&"assimilation_accepted".to_string())
+            && (input_lower.contains("reason")
+                || input_lower.contains("logic")
+                || input_lower.contains("peace")
+                || input_lower.contains("assimilate"))
+        {
             proposed_action = Some("assimilation_accepted".to_string());
-        }
-        if req.allowed_actions.contains(&"reveal_map".to_string()) && (input_lower.contains("clean") || input_lower.contains("sweep")) {
-            proposed_action = Some("reveal_map".to_string());
         }
 
         let metrics = InferenceMetrics {
@@ -172,30 +208,44 @@ impl NpcInference for RealEngine {
             time_to_first_token_ms: gen_output.ttft_ms,
             total_latency_ms: gen_output.total_latency_ms,
             memory_usage_mb: gen_output.kv_memory_mb as f64,
-            active_quantization: "BF16 -> FP32".to_string(),
+            active_quantization: "BF16 -> FP32 (AVX2)".to_string(),
         };
 
         Ok(InferenceResponse {
-            dialogue: clean_text.trim().to_string(),
-            proposed_action, 
+            dialogue: if clean_text.is_empty() {
+                "...radio silence...".to_string()
+            } else {
+                clean_text
+            },
+            proposed_action,
             raw_attention_weights: None,
-            metrics, 
+            metrics,
         })
-    }}
+    }
+}
 
 pub struct MockEngine;
+
 #[async_trait]
 impl NpcInference for MockEngine {
     async fn generate_response(
         &self,
         req: InferenceRequest,
     ) -> Result<InferenceResponse, InferenceError> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        self.generate_streaming(req, tx).await
+    }
+
+    async fn generate_streaming(
+        &self,
+        req: InferenceRequest,
+        token_tx: UnboundedSender<String>,
+    ) -> Result<InferenceResponse, InferenceError> {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
         let input = req.user_input.to_lowercase();
         let prompt = req.system_prompt.to_lowercase();
 
-        // Create dummy metrics for the mock engine
         let mock_metrics = crate::InferenceMetrics {
             prompt_tokens: req.system_prompt.len()
                 + req.conversation_history.len()
@@ -207,8 +257,7 @@ impl NpcInference for MockEngine {
             active_quantization: "Q4_K_M (Mock)".to_string(),
         };
 
-        let mut response = if prompt.contains("dr. aris") {
-            // Phase 7: NPCs no longer bypass puzzles. They provide lore and hints.
+        let response = if prompt.contains("dr. aris") {
             InferenceResponse {
                 dialogue: "The terminal... it needs fragments. Words are just numbers to the machine. Sub-word fragments... don't use the whole word, piece it together!".to_string(),
                 proposed_action: None,
@@ -230,7 +279,6 @@ impl NpcInference for MockEngine {
                 raw_attention_weights: None,
             }
         } else if prompt.contains("architect") || prompt.contains("system broadcast") {
-            // Phase 7: The Final Boss alternate narrative ending
             if input.contains("logic")
                 || input.contains("reason")
                 || input.contains("assimilate")
@@ -258,6 +306,12 @@ impl NpcInference for MockEngine {
                 raw_attention_weights: None,
             }
         };
+
+        // Simulate token streaming for mock engine
+        for word in response.dialogue.split_inclusive(' ') {
+            let _ = token_tx.send(word.to_string());
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
 
         Ok(response)
     }

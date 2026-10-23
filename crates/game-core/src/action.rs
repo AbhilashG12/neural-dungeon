@@ -253,14 +253,45 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
         }
 
         GameAction::Evade => {
-            if state.player.energy < ACTION_COST {
-                return Err(GameError::InsufficientEnergy);
-            }
             state.player.evading = true;
-            state.player.energy = state.player.energy.saturating_sub(ACTION_COST);
-            logs.push("You prepare to evade the next attack.".to_string());
-        }
+            state.player.energy = state.player.energy.saturating_sub(ACTION_COST / 2);
 
+            // RIPOSTE MECHANIC: Counter-strike any adjacent drone that is currently telegraphing!
+            let (px, py) = state.player.position;
+            let base_dmg = if let Some(w) = &state.player.weapon { 10 + w.bonus_damage } else { 10 };
+            let counter_dmg = (base_dmg + (state.player.level as i32 * 2)) / 2; // 50% riposte damage
+
+            let mut riposte_logs = Vec::new();
+            let mut killed_indices = Vec::new();
+
+            for (idx, enemy) in state.current_floor.enemies.iter_mut().enumerate() {
+                let dist = (enemy.position.0 - px).abs() + (enemy.position.1 - py).abs();
+                if dist == 1 && matches!(enemy.state, crate::world::EnemyState::Telegraphing { .. }) {
+                    enemy.hp = enemy.hp.saturating_sub(counter_dmg as u32);
+                    riposte_logs.push(format!(
+                        "EVADE & RIPOSTE! You dodged {} and countered for {} dmg! (HP: {})",
+                        enemy.name, counter_dmg, enemy.hp
+                    ));
+                    if enemy.hp == 0 {
+                        killed_indices.push(idx);
+                    }
+                }
+            }
+
+            if riposte_logs.is_empty() {
+                logs.push("You brace for impact and enter an evasive stance.".to_string());
+            } else {
+                logs.extend(riposte_logs);
+            }
+
+            // Clean up any drones killed by the riposte (iterate in reverse to preserve indices)
+            for &idx in killed_indices.iter().rev() {
+                let dead_enemy = state.current_floor.enemies.remove(idx);
+                let xp_gained = 50 + (state.floor_number * 10);
+                state.player.xp += xp_gained;
+                logs.push(format!("{} destroyed by counter-strike! +{} XP.", dead_enemy.name, xp_gained));
+            }
+        }
         GameAction::GrabItem => {
             let pos = state.player.position;
             if let Some(idx) = state

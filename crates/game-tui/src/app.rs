@@ -1,13 +1,11 @@
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use dungeon_gen::Generator;
 use game_core::action::GameAction;
 use game_core::puzzle::PuzzleState;
 use game_core::state::GameState;
-use game_core::world::{PuzzleType, Tile};
-use inference_adapter::{InferenceRequest, MockEngine, NpcInference};
-use ratatui::{Terminal, backend::Backend};
+use game_core::world::PuzzleType;
+use inference_adapter::{InferenceRequest, NpcInference};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc;
 
 #[derive(PartialEq)]
@@ -51,6 +49,10 @@ pub struct GameApp {
 }
 
 pub enum AsyncEvent {
+    TokenStream {
+        npc_id: usize,
+        token: String,
+    },
     InferenceComplete {
         npc_id: usize,
         response: inference_adapter::InferenceResponse,
@@ -67,11 +69,10 @@ impl GameApp {
         game_core::ai::process_engine_tick(&mut state);
         let mut generator = Generator::new(state.seed);
 
-        let (floor, player_start) = generator.generate_floor(70, 30, state.floor_number);
+        let (floor, player_start) = generator.generate_floor(56, 32, state.floor_number);
         state.current_floor = floor;
         state.player.position = player_start;
 
-        // Initialize the Tokio multi-producer, single-consumer channel for async inference
         let (tx, rx) = mpsc::unbounded_channel();
         let real_engine = inference_adapter::RealEngine::new();
 
@@ -87,7 +88,6 @@ impl GameApp {
             async_rx: rx,
             inference_engine: Arc::new(real_engine),
             theme: Theme::Cyberpunk,
-            //inference_engine: Arc::new(real_engine),
         }
     }
 
@@ -102,8 +102,13 @@ impl GameApp {
     pub fn process_async_events(&mut self) {
         while let Ok(event) = self.async_rx.try_recv() {
             match event {
-                // CORRECT PATTERN: We only extract npc_id and the unified response object
-                AsyncEvent::InferenceComplete { npc_id, response } => {
+                AsyncEvent::TokenStream { npc_id, token } => {
+                    // Ignore special control tokens in the live stream
+                    let clean_tok = token.replace("<|im_end|>", "").replace("<|im_start|>", "");
+                    if clean_tok.is_empty() {
+                        continue;
+                    }
+
                     if let Some(npc) = self
                         .state
                         .current_floor
@@ -111,8 +116,42 @@ impl GameApp {
                         .iter_mut()
                         .find(|n| n.id == npc_id)
                     {
-                        npc.memory
-                            .push(format!("{}: {}", npc.name, response.dialogue));
+                        let prefix = format!("{}:", npc.name);
+                        let placeholder = format!("{}: [Decrypting signal...]", npc.name);
+
+                        if let Some(last_memory) = npc.memory.last_mut() {
+                            if *last_memory == placeholder {
+                                // First streamed token replaces the "Decrypting..." indicator
+                                *last_memory = format!("{}: {}", npc.name, clean_tok.trim_start());
+                            } else if last_memory.starts_with(&prefix) {
+                                last_memory.push_str(&clean_tok);
+                            } else {
+                                npc.memory.push(format!("{}: {}", npc.name, clean_tok.trim_start()));
+                            }
+                        } else {
+                            npc.memory.push(format!("{}: {}", npc.name, clean_tok.trim_start()));
+                        }
+                    }
+                }
+                AsyncEvent::InferenceComplete { npc_id, response } => {
+                    // Replace the streamed line with the final sanitized response
+                    if let Some(npc) = self
+                        .state
+                        .current_floor
+                        .npcs
+                        .iter_mut()
+                        .find(|n| n.id == npc_id)
+                    {
+                        let prefix = format!("{}:", npc.name);
+                        if let Some(last_memory) = npc.memory.last_mut() {
+                            if last_memory.starts_with(&prefix) {
+                                *last_memory = format!("{}: {}", npc.name, response.dialogue);
+                            } else {
+                                npc.memory.push(format!("{}: {}", npc.name, response.dialogue));
+                            }
+                        } else {
+                            npc.memory.push(format!("{}: {}", npc.name, response.dialogue));
+                        }
                     }
 
                     if let Some(act) = &response.proposed_action {
@@ -138,7 +177,8 @@ impl GameApp {
                     }
 
                     self.log(format!(
-                        "Inference: {}ms | In: {} tok | Out: {} tok",
+                        "TTFT: {}ms | Total: {}ms | In: {} | Out: {} tok",
+                        response.metrics.time_to_first_token_ms,
                         response.metrics.total_latency_ms,
                         response.metrics.prompt_tokens,
                         response.metrics.completion_tokens
@@ -148,7 +188,6 @@ impl GameApp {
                         *is_waiting = false;
                     }
                 }
-                // CORRECT PATTERN: Extracting fields from the struct variant, not a tuple variant
                 AsyncEvent::InferenceError { npc_id, error } => {
                     self.log(format!("INFERENCE ERROR: {}", error));
 
@@ -159,10 +198,20 @@ impl GameApp {
                         .iter_mut()
                         .find(|n| n.id == npc_id)
                     {
-                        npc.memory.push(format!(
+                        let prefix = format!("{}:", npc.name);
+                        let err_line = format!(
                             "{}: My neural link is failing. I cannot process that right now.",
                             npc.name
-                        ));
+                        );
+                        if let Some(last_memory) = npc.memory.last_mut() {
+                            if last_memory.starts_with(&prefix) {
+                                *last_memory = err_line;
+                            } else {
+                                npc.memory.push(err_line);
+                            }
+                        } else {
+                            npc.memory.push(err_line);
+                        }
                     }
 
                     if let UiMode::Dialogue { is_waiting, .. } = &mut self.ui_mode {
@@ -182,7 +231,6 @@ impl GameApp {
             return;
         }
 
-        // We clone the mode to avoid borrow checker conflicts when mutating state
         let mut current_mode = self.ui_mode.clone();
 
         match &mut current_mode {
@@ -207,6 +255,25 @@ impl GameApp {
                     KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Down => {
                         action = Some(GameAction::Move { dx: 0, dy: 1 })
                     }
+                    KeyCode::Char('x') | KeyCode::Char('X') => {
+                        let (px, py) = self.state.player.position;
+                        let mut target_id = None;
+                        for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                            if let Some(enemy) = self.state.current_floor.get_enemy_at(px + dx, py + dy) {
+                                target_id = Some(enemy.id);
+                                break;
+                            }
+                        }
+                        if let Some(id) = target_id {
+                            action = Some(GameAction::Attack {
+                                target_id: id,
+                                attack_type: game_core::action::AttackType::Strike,
+                            });
+                        } else {
+                            self.log("No adjacent drone in range for Strike.".to_string());
+                        }
+                    }
+
                     KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Left => {
                         action = Some(GameAction::Move { dx: -1, dy: 0 })
                     }
@@ -225,9 +292,10 @@ impl GameApp {
                             let tx = px + dx;
                             let ty = py + dy;
                             if let Some(game_core::world::Tile::Terminal { puzzle, is_solved }) =
-                                self.state.current_floor.get_tile(tx, ty)
+                                self.state.current_floor.get_tile(tx, ty).cloned()
                             {
                                 if !is_solved {
+                                    let puzzle_seed = self.state.seed.wrapping_add(self.state.floor_number as u64 * 1000).wrapping_add((nx as u64) * 31 + (ny as u63));
                                     self.ui_mode = UiMode::Puzzle {
                                         puzzle: puzzle.clone(),
                                         state: game_core::puzzle::PuzzleState::new(&puzzle),
@@ -235,7 +303,7 @@ impl GameApp {
                                     };
                                 } else {
                                     self.log("Terminal already bypassed.".to_string());
-                                }
+                                                                }
                                 interacted = true;
                                 break;
                             }
@@ -258,7 +326,6 @@ impl GameApp {
                         action = Some(GameAction::UseItem { index: 0 })
                     }
                     KeyCode::Char('q') | KeyCode::Char('Q') => {
-                        // Find adjacent enemy to target with ability
                         let (px, py) = self.state.player.position;
                         let mut target_id = None;
                         for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
@@ -291,7 +358,7 @@ impl GameApp {
                                 self.state.seed + self.state.floor_number as u64,
                             );
                             let (floor, player_start) =
-                                generator.generate_floor(70, 30, self.state.floor_number);
+                                generator.generate_floor(56, 32, self.state.floor_number);
                             self.state.current_floor = floor;
                             self.state.player.position = player_start;
                             self.log(format!("Descended to Sector {}.", self.state.floor_number));
@@ -363,21 +430,19 @@ impl GameApp {
                 let current_coords = *coords;
                 let puzzle_type = puzzle.clone();
                 let explanation = state.get_advanced_explanation().to_string();
-                let mut solved = false;
+                let solved = false;
                 let mut abort = false;
 
                 match key.code {
                     KeyCode::Esc => abort = true,
                     KeyCode::Enter => {
                         if state.check_win_condition() {
-                            // 1. Mark the terminal as solved on the map
                             if let Some(game_core::world::Tile::Terminal { is_solved, .. }) =
                                 self.state.current_floor.get_tile_mut(coords.0, coords.1)
                             {
                                 *is_solved = true;
                             }
 
-                            // 2. Dispense the mandatory progression item
                             self.state.player.inventory.push(game_core::world::Item {
                                 id: self.state.turn_count as usize,
                                 name: "Sector Key".to_string(),
@@ -387,7 +452,6 @@ impl GameApp {
                                 },
                             });
 
-                            // 3. Display the educational lesson based on the puzzle type
                             let reward_msg = match puzzle {
                                 game_core::world::PuzzleType::TokenVault => {
                                     "Token sequence accepted. Sector Key dispensed. (Lesson: LLMs process sub-word fragments)."
@@ -403,8 +467,6 @@ impl GameApp {
                                 }
                             };
                             self.log(reward_msg.to_string());
-
-                            // 4. Close the puzzle overlay
                             self.ui_mode = UiMode::Playing;
                         } else {
                             self.log("ACCESS DENIED: Neural configuration invalid.".to_string());
@@ -504,7 +566,6 @@ impl GameApp {
                         }
                     };
                     self.log(reward_msg.to_string());
-
                     self.ui_mode = UiMode::PuzzleSolved { explanation };
                 } else {
                     self.ui_mode = current_mode;
@@ -516,7 +577,7 @@ impl GameApp {
                     self.state = game_core::state::GameState::new_test_state();
                     let mut generator = dungeon_gen::Generator::new(self.state.seed);
                     let (floor, player_start) =
-                        generator.generate_floor(40, 20, self.state.floor_number);
+                        generator.generate_floor(56, 32, self.state.floor_number);
                     self.state.current_floor = floor;
                     self.state.player.position = player_start;
                     self.ui_mode = UiMode::Playing;
@@ -531,6 +592,9 @@ impl GameApp {
                 is_waiting,
             } => {
                 if *is_waiting {
+                    if key.code == KeyCode::Esc {
+                        self.ui_mode = UiMode::Playing;
+                    }
                     return;
                 }
 
@@ -538,11 +602,11 @@ impl GameApp {
                     KeyCode::Esc => self.ui_mode = UiMode::Playing,
                     KeyCode::Backspace => {
                         input_buffer.pop();
-                        self.ui_mode = current_mode; // Save buffer back to state
+                        self.ui_mode = current_mode;
                     }
                     KeyCode::Char(c) => {
                         input_buffer.push(c);
-                        self.ui_mode = current_mode; // Save buffer back to state
+                        self.ui_mode = current_mode;
                     }
                     KeyCode::Enter => {
                         if input_buffer.trim().is_empty() {
@@ -552,19 +616,29 @@ impl GameApp {
                         let msg = input_buffer.clone();
                         input_buffer.clear();
                         *is_waiting = true;
+                        let id = *npc_id;
+
+                        // Save updated input_buffer and is_waiting state back to self.ui_mode!
+                        self.ui_mode = current_mode;
 
                         let npc_idx = self
                             .state
                             .current_floor
                             .npcs
                             .iter()
-                            .position(|n| n.id == *npc_id)
+                            .position(|n| n.id == id)
                             .unwrap();
                         let npc = &mut self.state.current_floor.npcs[npc_idx];
 
-                        npc.memory.push(format!("Player: {}", msg));
+                        // Record history BEFORE pushing the new player turn and placeholder
+                        // so we don't send the current question twice in the prompt!
+                        let prior_history = npc.memory.join("\n");
 
-                        if npc.memory.len() > 10 {
+                        npc.memory.push(format!("Player: {}", msg));
+                        npc.memory
+                            .push(format!("{}: [Decrypting signal...]", npc.name));
+
+                        if npc.memory.len() > 12 {
                             npc.memory.drain(0..2);
                             npc.memory
                                 .insert(0, "[System: Earlier memory archived]".to_string());
@@ -575,7 +649,7 @@ impl GameApp {
                                 "You are {}. Personality: {}. Goal: {}",
                                 npc.name, npc.personality, npc.goal
                             ),
-                            conversation_history: npc.memory.join("\n"),
+                            conversation_history: prior_history,
                             user_input: msg,
                             allowed_actions: vec![
                                 "unlock_doors".to_string(),
@@ -587,35 +661,41 @@ impl GameApp {
 
                         let tx = self.async_tx.clone();
                         let engine = self.inference_engine.clone();
-                        let id = *npc_id;
+
+                        let (token_tx, mut token_rx) = mpsc::unbounded_channel::<String>();
+                        let tx_tokens = tx.clone();
+                        tokio::spawn(async move {
+                            while let Some(token) = token_rx.recv().await {
+                                let _ = tx_tokens.send(AsyncEvent::TokenStream { npc_id: id, token });
+                            }
+                        });
 
                         tokio::spawn(async move {
                             let result = tokio::time::timeout(
-                                std::time::Duration::from_secs(60),
-                                engine.generate_response(req),
+                                std::time::Duration::from_secs(90),
+                                engine.generate_streaming(req, token_tx),
                             )
                             .await;
 
                             match result {
                                 Ok(Ok(res)) => {
-                                    tx.send(AsyncEvent::InferenceComplete {
+                                    let _ = tx.send(AsyncEvent::InferenceComplete {
                                         npc_id: id,
                                         response: res,
-                                    })
-                                    .unwrap();
+                                    });
                                 }
-                                Ok(Err(e)) => tx
-                                    .send(AsyncEvent::InferenceError {
+                                Ok(Err(e)) => {
+                                    let _ = tx.send(AsyncEvent::InferenceError {
                                         npc_id: id,
                                         error: e.to_string(),
-                                    })
-                                    .unwrap(),
-                                Err(_) => tx
-                                    .send(AsyncEvent::InferenceError {
+                                    });
+                                }
+                                Err(_) => {
+                                    let _ = tx.send(AsyncEvent::InferenceError {
                                         npc_id: id,
                                         error: "Inference timed out".to_string(),
-                                    })
-                                    .unwrap(),
+                                    });
+                                }
                             }
                         });
                     }
