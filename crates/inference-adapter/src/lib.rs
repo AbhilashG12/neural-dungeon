@@ -64,10 +64,8 @@ pub trait NpcInference: Send + Sync {
 
 impl RealEngine {
     pub fn new() -> Self {
-        let model_path = r"C:\VsCodeProjects\rust\rust-inference\smollm-instruct.safetensors";
-        let tokenizer_path =
-            r"C:\VsCodeProjects\rust\rust-inference\smollm_instruct_tokenizer.json";
-
+        let model_path = "smollm-instruct.safetensors";
+        let tokenizer_path = "smollm_instruct_tokenizer.json";
         let engine = LlmEngine::load(model_path, tokenizer_path);
 
         Self {

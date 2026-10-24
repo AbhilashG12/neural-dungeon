@@ -44,6 +44,21 @@ pub struct Player {
 }
 
 impl GameState {
+
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+        let data = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        std::fs::write(path, data)?;
+        Ok(())
+    }
+    pub fn load_from_file(path: &str) -> std::io::Result<Self> {
+        let data = std::fs::read_to_string(path)?;
+        let state: GameState = serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        Ok(state)
+    }
+
+
     pub fn new_test_state() -> Self {
         let width = 40;
         let height = 20;

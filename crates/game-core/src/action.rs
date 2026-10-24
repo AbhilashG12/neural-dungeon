@@ -489,4 +489,61 @@ mod tests {
         assert_eq!(state.player.position, (1, 1));
         assert_eq!(state.player.energy, 100);
     }
+
+    #[test]
+    fn test_full_game_integration_loop() {
+        let mut state = setup_test_state();
+        
+        // 1. Player enters room and moves
+        assert!(process_action(&mut state, GameAction::Move { dx: 0, dy: 1 }).is_ok());
+        
+        // 2. Spawn an enemy and defeat it
+        state.current_floor.enemies.push(crate::world::Enemy {
+            id: 1,
+            name: "Test Drone".to_string(),
+            position: (1, 3),
+            hp: 5,
+            speed: 10,
+            state: crate::world::EnemyState::Idle,
+            hit_timer: 0,
+        });
+        
+        // Attack the drone (Strike deals 10+ damage, should kill it)
+        let _ = process_action(&mut state, GameAction::Attack { target_id: 1, attack_type: AttackType::Strike });
+        assert!(state.current_floor.enemies.is_empty(), "Enemy should be destroyed");
+        
+        // 3. Collect a dropped key
+        state.current_floor.items.push(crate::world::Item {
+            id: 2,
+            name: "Sector Key".to_string(),
+            position: state.player.position,
+            item_type: ItemType::Key { door_id: "exit".to_string() },
+        });
+        let _ = process_action(&mut state, GameAction::GrabItem);
+        assert_eq!(state.player.inventory.len(), 1, "Player should have grabbed the key");
+        
+        // 4 & 5 & 6. Context construction & NPC interaction is handled async in TUI, 
+        // but we can test door unlocking natively here.
+        state.current_floor.set_tile(1, 3, Tile::Door { is_open: false, locked: true });
+        
+        // Move next to door and interact
+        state.player.position = (1, 2);
+        let _ = process_action(&mut state, GameAction::Interact);
+        if let Some(Tile::Door { is_open, locked }) = state.current_floor.get_tile(1, 3) {
+            assert!(is_open, "Door should be opened");
+            assert!(!locked, "Door should be unlocked");
+        } else {
+            panic!("Tile should be a door");
+        }
+        
+        // 8 & 9 & 10. Save, Restart, Resume
+        let temp_save_path = "test_save.json";
+        state.save_to_file(temp_save_path).expect("Failed to save state");
+        
+        let loaded_state = GameState::load_from_file(temp_save_path).expect("Failed to load state");
+        assert_eq!(loaded_state.player.position, (1, 2), "Player position should match loaded state");
+        assert_eq!(loaded_state.player.inventory.len(), 0, "Key was consumed, inventory should be empty");
+        
+        std::fs::remove_file(temp_save_path).unwrap(); // Cleanup
+    }
 }

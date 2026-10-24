@@ -396,7 +396,7 @@ fn render_pause_menu(f: &mut Frame, area: Rect) {
         )
         .alignment(Alignment::Center)
         .style(Style::default().fg(Color::Yellow).bg(Color::Black));
-    let popup_area = centered_rect(30, 20, area);
+    let popup_area = centered_rect(30, 30, area);
     f.render_widget(Clear, popup_area);
     f.render_widget(block, popup_area);
 }

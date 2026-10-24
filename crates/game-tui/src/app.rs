@@ -170,35 +170,34 @@ impl GameApp {
                         }
                     }
 
-                    if let Some(act) = &response.proposed_action {
-                        if act == "unlock_doors" {
+                   if let Some(act) = &response.proposed_action {
+                        if act == "unlock_doors" || response.dialogue.contains("[unlock_doors]") {
                             for tile in self.state.current_floor.tiles.iter_mut() {
                                 if let game_core::world::Tile::Door { is_open, .. } = tile {
                                     *is_open = true;
                                 }
                             }
                             self.log("AI SYSTEM: Override accepted. Doors unlocked.".to_string());
-                        } else if act == "reveal_map" {
+                        } else if act == "reveal_map" || response.dialogue.contains("[reveal_map]") {
                             for explored in self.state.current_floor.explored.iter_mut() {
                                 *explored = true;
                             }
                             self.log("AI SYSTEM: Sector map data downloaded.".to_string());
-                        } else if act == "assimilation_accepted" {
+                        } else if act == "assimilation_accepted" || response.dialogue.contains("[assimilation_accepted]") {
                             self.state
                                 .current_floor
                                 .enemies
                                 .retain(|e| e.name != "The Nexus Mind (Architect)");
-                            self.log("NARRATIVE VICTORY: The Nexus Mind has accepted your logic and assimilated. Sector 7 is secure.".to_string());
-                            for tile in self.state.current_floor.tiles.iter_mut() {
-                                if let game_core::world::Tile::Door { is_open, locked } = tile {
-                                    *is_open = true;
-                                    *locked = false;
-                                }
-                            }
+                            self.log("NARRATIVE VICTORY: The Nexus Mind has accepted your logic and assimilated.".to_string());
                             
-                            self.log("NARRATIVE VICTORY: The Nexus Mind has assimilated.".to_string());
-                            self.log("Facility lockdown lifted. Doors open.".to_string());
+                            // Trigger the victory screen instantly!
+                            self.ui_mode = UiMode::Victory;
                         }
+                    } else if response.dialogue.contains("[assimilation_accepted]") {
+                        // Hard fallback if proposed_action was None but the tag is in the text
+                        self.state.current_floor.enemies.retain(|e| e.name != "The Nexus Mind (Architect)");
+                        self.log("NARRATIVE VICTORY: The Nexus Mind has assimilated.".to_string());
+                        self.ui_mode = UiMode::Victory;
                     }
 
                     self.log(format!(
@@ -465,6 +464,26 @@ impl GameApp {
             UiMode::Paused => match key.code {
                 KeyCode::Esc => self.ui_mode = UiMode::Playing,
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    if let Err(e) = self.state.save_to_file("neural_save.json") {
+                        self.log(format!("SAVE FAILED: {}", e));
+                    } else {
+                        self.log("SYSTEM SAVED to neural_save.json".to_string());
+                        self.ui_mode = UiMode::Playing;
+                    }
+                }
+                KeyCode::Char('l') | KeyCode::Char('L') => {
+                    match game_core::state::GameState::load_from_file("neural_save.json") {
+                        Ok(loaded_state) => {
+                            self.state = loaded_state;
+                            self.log("SYSTEM RESTORED from neural_save.json".to_string());
+                            self.ui_mode = UiMode::Playing;
+                        }
+                        Err(e) => {
+                            self.log(format!("LOAD FAILED: {}", e));
+                        }
+                    }
+                }
                 _ => {}
             },
             UiMode::Help | UiMode::HelpMenu => {
@@ -812,7 +831,7 @@ impl GameApp {
 
                         let req = InferenceRequest {
                             system_prompt: format!(
-                                "You are {}. Personality: {}. Goal: {} CURRENT FLOOR TERMINAL DATA: {}",
+                                "You are {}. Personality: {}. Goal: {} CURRENT FLOOR TERMINAL DATA: {}\nIf the player logically convinces you to cooperate, open doors, or assimilate, you MUST include one of these exact strings in your response to trigger the game engine: [unlock_doors], [reveal_map], or [assimilation_accepted].",
                                 npc.name, npc.personality, npc.goal, live_puzzle_context
                             ),
                             conversation_history: prior_history,

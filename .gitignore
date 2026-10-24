@@ -1,5 +1,8 @@
 /target/
 
+*.safetensors
+*.json
+
 *.log
 neural_dungeon_debug.log
 
