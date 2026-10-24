@@ -23,26 +23,22 @@ pub fn update_fov(state: &mut GameState) {
 }
 
 pub fn process_engine_tick(state: &mut GameState) -> Vec<String> {
-    let mut logs = Vec::new();
-    update_fov(state);
-    let (px, py) = state.player.position;
-    let radius = 6;
-    for y in (py - radius)..=(py + radius) {
-        for x in (px - radius)..=(px + radius) {
-            let dist_sq = (px - x) * (px - x) + (py - y) * (py - y);
-            if dist_sq <= radius * radius {
-                if x >= 0
-                    && y >= 0
-                    && x < state.current_floor.width as i32
-                    && y < state.current_floor.height as i32
-                {
-                    let idx = state.current_floor.idx(x, y);
-                    state.current_floor.explored[idx] = true;
-                }
-            }
+    // 1. Process Visual Polish Timers (Hit Flashes)
+    if state.player.hit_timer > 0 {
+        state.player.hit_timer -= 1;
+    }
+    for enemy in &mut state.current_floor.enemies {
+        if enemy.hit_timer > 0 {
+            enemy.hit_timer -= 1;
         }
     }
 
+    let mut logs = Vec::new();
+    
+    // 2. Update Fog of War
+    update_fov(state);
+
+    // 3. Process Energy Tick Loop
     while state.player.energy < ACTION_COST {
         state.player.energy += state.player.speed;
 
@@ -148,6 +144,7 @@ fn execute_enemy_fsm(state: &mut GameState, enemy_idx: usize) -> Option<String> 
                     return Some(format!("{} attacks, but you evaded gracefully!", name));
                 } else {
                     state.player.hp = state.player.hp.saturating_sub(damage);
+                    state.player.hit_timer = 2; // TRIGGER VISUAL HIT FLASH ON PLAYER
                     return Some(format!("{} strikes you for {} damage!", name, damage));
                 }
             } else {
@@ -186,6 +183,7 @@ mod tests {
                 damage: 50,
             },
             aggro_range: 5,
+            hit_timer: 0, // Added to fix test compile
         };
         floor.enemies.push(enemy);
 
@@ -203,6 +201,10 @@ mod tests {
                 active_quests: vec![],
                 evading: true,
                 max_inventory: 10,
+                hit_timer: 0, // Added to fix test compile
+                level: 1,
+                xp: 0,
+                weapon: None,
             },
             current_floor: floor,
         };

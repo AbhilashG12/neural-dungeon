@@ -87,6 +87,7 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
             state.player.position = (new_x, new_y);
             if let Tile::Hazard { damage } = tile {
                 state.player.hp = state.player.hp.saturating_sub(damage as u32);
+                state.player.hit_timer = 2; // Hit flash for hazard
                 logs.push(format!(
                     "You stepped on a hazard and took {} damage!",
                     damage
@@ -121,25 +122,61 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                 .position(|e| e.id == target_id)
                 .ok_or(GameError::InvalidTarget)?;
 
-            let enemy = &mut state.current_floor.enemies[enemy_idx];
+            // 1. Apply damage in a restricted scope to free the borrow immediately
+            let mut is_dead = false;
+            {
+                let enemy = &mut state.current_floor.enemies[enemy_idx];
+                enemy.hp = std::cmp::max(0, enemy.hp.saturating_sub(damage as u32));
+                enemy.hit_timer = 2; // Trigger visual hit flash
+                logs.push(format!("You hit {} for {} damage.", enemy.name, damage));
+                if enemy.hp == 0 {
+                    is_dead = true;
+                }
+            }
 
-            // Replaced saturating_sub(damage as u32) with a safe max comparison for i32
-            enemy.hp = std::cmp::max(0, enemy.hp - damage as u32);
-            logs.push(format!("You hit {} for {} damage.", enemy.name, damage));
+            // 2. If dead, remove the enemy entirely. We now OWN `dead_enemy`!
+            if is_dead {
+                let dead_enemy = state.current_floor.enemies.remove(enemy_idx);
 
-            if enemy.hp == 0 {
-                if enemy.id == 9999 {
+                if dead_enemy.id == 9999 {
                     logs.push("========================================".to_string());
                     logs.push("VICTORY! The Nexus Mind is shattered.".to_string());
                     logs.push("Sector 7 is secure. The simulation ends.".to_string());
                     logs.push("========================================".to_string());
+                    
+                    // Since we aren't borrowing an enemy anymore, manipulating doors works perfectly
+                    for y in 0..state.current_floor.height as i32 {
+                        for x in 0..state.current_floor.width as i32 {
+                            if let Some(Tile::Door { .. }) = state.current_floor.get_tile(x, y) {
+                                state.current_floor.set_tile(
+                                    x, y, 
+                                    Tile::Door { is_open: true, locked: false }
+                                );
+                            }
+                        }
+                    }
                 } else {
                     let xp_gained = 50 + (state.floor_number * 10);
                     state.player.xp += xp_gained;
                     logs.push(format!(
                         "{} destroyed! Gained {} XP.",
-                        enemy.name, xp_gained
+                        dead_enemy.name, xp_gained
                     ));
+
+                    // Check active side-quests for drone kills
+                    for quest in &mut state.player.active_quests {
+                        if !quest.completed && quest.id.starts_with("quest_") {
+                            quest.current_count += 1;
+                            if quest.current_count >= quest.target_count {
+                                quest.completed = true;
+                                state.player.xp += quest.reward_xp;
+                                logs.push(format!(
+                                    "QUEST COMPLETE: {}! (+{} XP)",
+                                    quest.title, quest.reward_xp
+                                ));
+                            }
+                        }
+                    }
 
                     if state.player.xp >= state.player.level * 150 {
                         state.player.xp -= state.player.level * 150;
@@ -153,24 +190,24 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                     }
                 }
 
+                // Drop loot at the exact position the enemy died
                 let item_drop = if state.player.level > 2 && state.turn_count % 3 == 0 {
                     crate::world::Item {
                         id: state.turn_count as usize,
                         name: "Thermal Katana".to_string(),
-                        position: enemy.position,
+                        position: dead_enemy.position,
                         item_type: crate::world::ItemType::Weapon { damage: 15 },
                     }
                 } else {
                     crate::world::Item {
                         id: state.turn_count as usize,
                         name: "Health Patch".to_string(),
-                        position: enemy.position,
+                        position: dead_enemy.position,
                         item_type: crate::world::ItemType::Consumable { heal: 50 },
                     }
                 };
 
                 state.current_floor.items.push(item_drop);
-                state.current_floor.enemies.remove(enemy_idx);
             }
             state.player.energy = state.player.energy.saturating_sub(cost);
         }
@@ -256,7 +293,6 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
             state.player.evading = true;
             state.player.energy = state.player.energy.saturating_sub(ACTION_COST / 2);
 
-            // RIPOSTE MECHANIC: Counter-strike any adjacent drone that is currently telegraphing!
             let (px, py) = state.player.position;
             let base_dmg = if let Some(w) = &state.player.weapon { 10 + w.bonus_damage } else { 10 };
             let counter_dmg = (base_dmg + (state.player.level as i32 * 2)) / 2; // 50% riposte damage
@@ -268,6 +304,7 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                 let dist = (enemy.position.0 - px).abs() + (enemy.position.1 - py).abs();
                 if dist == 1 && matches!(enemy.state, crate::world::EnemyState::Telegraphing { .. }) {
                     enemy.hp = enemy.hp.saturating_sub(counter_dmg as u32);
+                    enemy.hit_timer = 2; // Trigger hit animation
                     riposte_logs.push(format!(
                         "EVADE & RIPOSTE! You dodged {} and countered for {} dmg! (HP: {})",
                         enemy.name, counter_dmg, enemy.hp
@@ -284,12 +321,46 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                 logs.extend(riposte_logs);
             }
 
-            // Clean up any drones killed by the riposte (iterate in reverse to preserve indices)
+            // Process Riposte Kills & Quest completion
+            // Process Riposte Kills & Quest completion
             for &idx in killed_indices.iter().rev() {
                 let dead_enemy = state.current_floor.enemies.remove(idx);
-                let xp_gained = 50 + (state.floor_number * 10);
-                state.player.xp += xp_gained;
-                logs.push(format!("{} destroyed by counter-strike! +{} XP.", dead_enemy.name, xp_gained));
+                
+                if dead_enemy.id == 9999 {
+                    logs.push("========================================".to_string());
+                    logs.push("VICTORY! The Nexus Mind was shattered by a counter-strike!".to_string());
+                    logs.push("Sector 7 is secure. Facility doors unlocked.".to_string());
+                    logs.push("========================================".to_string());
+                    
+                    for y in 0..state.current_floor.height as i32 {
+                        for x in 0..state.current_floor.width as i32 {
+                            if let Some(Tile::Door { .. }) = state.current_floor.get_tile(x, y) {
+                                state.current_floor.set_tile(
+                                    x, y, 
+                                    Tile::Door { is_open: true, locked: false }
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    let xp_gained = 50 + (state.floor_number * 10);
+                    state.player.xp += xp_gained;
+                    logs.push(format!("{} destroyed by counter-strike! +{} XP.", dead_enemy.name, xp_gained));
+
+                    for quest in &mut state.player.active_quests {
+                        if !quest.completed && quest.id.starts_with("quest_") {
+                            quest.current_count += 1;
+                            if quest.current_count >= quest.target_count {
+                                quest.completed = true;
+                                state.player.xp += quest.reward_xp;
+                                logs.push(format!(
+                                    "QUEST COMPLETE: {}! (+{} XP)",
+                                    quest.title, quest.reward_xp
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         }
         GameAction::GrabItem => {
@@ -335,7 +406,6 @@ pub fn process_action(state: &mut GameState, action: GameAction) -> Result<Vec<S
                     logs.push(format!("You used {} and recovered {} HP.", item.name, heal));
                 }
                 crate::world::ItemType::Weapon { damage } => {
-                    // Equip weapon and place old weapon back into inventory
                     if let Some(old_weapon) = state.player.weapon.take() {
                         state.player.inventory.push(crate::world::Item {
                             id: 999,
@@ -388,7 +458,9 @@ mod tests {
                 inventory: vec![],
                 active_quests: vec![],
                 evading: false,
+                hit_timer: 0, // Updated for test compliance
                 max_inventory: 12,
+                weapon: None,
             },
             current_floor: floor,
         }

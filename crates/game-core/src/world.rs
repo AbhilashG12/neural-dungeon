@@ -48,6 +48,7 @@ pub struct Enemy {
     pub name: String,
     pub state: EnemyState,
     pub aggro_range: i32,
+    pub hit_timer: u8,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

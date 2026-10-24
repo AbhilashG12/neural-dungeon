@@ -1,5 +1,5 @@
 use crate::app::{GameApp, UiMode};
-use game_core::world::{EnemyState, Tile};
+use game_core::world::Tile;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -42,6 +42,7 @@ pub fn render(f: &mut Frame, app: &GameApp) {
         UiMode::Paused => render_pause_menu(f, area),
         UiMode::Inventory => render_inventory_menu(f, app, area),
         UiMode::GameOver => render_game_over_menu(f, area),
+        UiMode::Victory => render_victory_menu(f, area),
         UiMode::Help | UiMode::HelpMenu => render_help_menu(f, area),
         UiMode::Dialogue {
             npc_id,
@@ -85,8 +86,6 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
     let floor = &app.state.current_floor;
     let (px, py) = app.state.player.position;
 
-    // Calculate static padding so the entire dungeon is centered inside the 75% box
-    // and NEVER moves when the player walks.
     let map_char_width = (floor.width as u16) * 2;
     let map_char_height = floor.height as u16;
 
@@ -95,7 +94,7 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
 
     let mut map_lines = Vec::new();
 
-    // Top vertical padding to center the board
+    // Top vertical padding to center the static board
     for _ in 0..pad_top {
         map_lines.push(Line::from(""));
     }
@@ -103,7 +102,6 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
     let left_margin = " ".repeat(pad_left as usize);
 
     for y in 0..floor.height as i32 {
-        // Stop if the terminal window was resized smaller than the floor height
         if map_lines.len() >= inner_area.height as usize {
             break;
         }
@@ -114,7 +112,6 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
         }
 
         for x in 0..floor.width as i32 {
-            // Stop rendering columns if the terminal window is narrower than the floor
             if (x as u16 * 2) + pad_left + 2 > inner_area.width {
                 break;
             }
@@ -125,15 +122,22 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
             }
 
             if (px, py) == (x, y) {
-                let color = if app.state.player.evading {
-                    COLOR_NEON_MAGENTA
+                if app.state.player.hit_timer > 0 {
+                    row.push(Span::styled(
+                        "@ ",
+                        Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+                    ));
                 } else {
-                    COLOR_NEON_CYAN
-                };
-                row.push(Span::styled(
-                    "@ ",
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ));
+                    let color = if app.state.player.evading {
+                        COLOR_NEON_MAGENTA
+                    } else {
+                        COLOR_NEON_CYAN
+                    };
+                    row.push(Span::styled(
+                        "@ ",
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ));
+                }
             } else if let Some(_npc) = floor.get_npc_at(x, y) {
                 row.push(Span::styled(
                     "N ",
@@ -142,20 +146,24 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 ));
             } else if let Some(enemy) = floor.get_enemy_at(x, y) {
-                let is_telegraphing = matches!(
-                    enemy.state,
-                    game_core::world::EnemyState::Telegraphing { .. }
-                );
-                let color = if is_telegraphing {
-                    Color::Yellow
-                } else {
-                    Color::Red
-                };
                 let glyph = if enemy.id == 9999 { "M " } else { "Ω " };
-                row.push(Span::styled(
-                    glyph,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ));
+                
+                if enemy.hit_timer > 0 {
+                    row.push(Span::styled(
+                        glyph,
+                        Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    let is_telegraphing = matches!(
+                        enemy.state,
+                        game_core::world::EnemyState::Telegraphing { .. }
+                    );
+                    let color = if is_telegraphing { Color::Yellow } else { Color::Red };
+                    row.push(Span::styled(
+                        glyph,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ));
+                }
             } else if let Some(item) = floor.items.iter().find(|i| i.position == (x, y)) {
                 match &item.item_type {
                     game_core::world::ItemType::Key { .. } => {
@@ -185,15 +193,9 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
                 let symbol = match floor.get_tile(x, y).unwrap_or(Tile::Wall) {
                     Tile::Wall => Span::styled("██", Style::default().fg(COLOR_TECH_GRAY)),
                     Tile::Floor => Span::styled("· ", Style::default().fg(Color::DarkGray)),
-                    Tile::Door { is_open: true, .. } => {
-                        Span::styled("/ ", Style::default().fg(Color::Green))
-                    }
-                    Tile::Door { is_open: false, .. } => {
-                        Span::styled("▣ ", Style::default().fg(Color::Yellow))
-                    }
-                    Tile::StairsDown => {
-                        Span::styled("▼ ", Style::default().fg(COLOR_NEON_MAGENTA))
-                    }
+                    Tile::Door { is_open: true, .. } => Span::styled("/ ", Style::default().fg(Color::Green)),
+                    Tile::Door { is_open: false, .. } => Span::styled("▣ ", Style::default().fg(Color::Yellow)),
+                    Tile::StairsDown => Span::styled("▼ ", Style::default().fg(COLOR_NEON_MAGENTA)),
                     Tile::Hazard { .. } => {
                         let hazard_color = if app.theme == crate::app::Theme::Cyberpunk {
                             Color::Red
@@ -204,9 +206,7 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
                     }
                     Tile::Terminal { is_solved: true, .. } => Span::styled(
                         "T ",
-                        Style::default()
-                            .fg(COLOR_HUD_GREEN)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(COLOR_HUD_GREEN).add_modifier(Modifier::BOLD),
                     ),
                     Tile::Terminal { is_solved: false, .. } => Span::styled(
                         "T ",
@@ -222,7 +222,6 @@ fn render_map(f: &mut Frame, app: &GameApp, area: Rect) {
     let map_widget = Paragraph::new(map_lines);
     f.render_widget(map_widget, inner_area);
 }
-
 
 fn render_stats(f: &mut Frame, app: &GameApp, area: Rect) {
     let p = &app.state.player;
@@ -292,33 +291,30 @@ fn render_stats(f: &mut Frame, app: &GameApp, area: Rect) {
 fn render_info(f: &mut Frame, app: &GameApp, area: Rect) {
     let mut text = vec![];
 
+    let (threat_label, threat_color) = match app.state.floor_number {
+        1 => ("MINIMAL", COLOR_HUD_GREEN),
+        2 | 3 => ("ELEVATED", Color::Yellow),
+        4 => ("SEVERE", Color::LightRed),
+        5.. => ("CRITICAL (CORE)", Color::Red),
+        _ => ("UNKNOWN", Color::DarkGray),
+    };
+
     text.push(Line::from(Span::styled(
         " ENVIRONMENT METRICS:",
-        Style::default()
-            .fg(COLOR_NEON_CYAN)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::BOLD),
     )));
-    text.push(Line::from(format!(
-        "  SECTOR DEPTH : {}",
-        app.state.floor_number
-    )));
-    text.push(Line::from(format!(
-        "  THREAT LEVEL : {}",
-        if app.state.floor_number > 3 {
-            "CRITICAL"
-        } else {
-            "ELEVATED"
-        }
-    )));
+    text.push(Line::from(format!("  SECTOR DEPTH : {} / 5", app.state.floor_number)));
+    text.push(Line::from(vec![
+        Span::raw("  THREAT LEVEL : "),
+        Span::styled(threat_label, Style::default().fg(threat_color).add_modifier(Modifier::BOLD)),
+    ]));
     text.push(Line::from("  LLM ENGINE   : Q4_K_M (ACTIVE)"));
 
     text.push(Line::from(""));
 
     text.push(Line::from(Span::styled(
         " ACTIVE DIRECTIVE:",
-        Style::default()
-            .fg(COLOR_NEON_CYAN)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::BOLD),
     )));
     for quest in &app.state.player.active_quests {
         let (icon, color) = if quest.completed {
@@ -334,10 +330,8 @@ fn render_info(f: &mut Frame, app: &GameApp, area: Rect) {
 
     text.push(Line::from(""));
     text.push(Line::from(Span::styled(
-        "  [?, H, h] OPEN SYSTEM MANUAL",
-        Style::default()
-            .fg(COLOR_NEON_MAGENTA)
-            .add_modifier(Modifier::RAPID_BLINK),
+        "  [?, H] OPEN SYSTEM MANUAL",
+        Style::default().fg(COLOR_NEON_MAGENTA).add_modifier(Modifier::RAPID_BLINK),
     )));
 
     let block = Paragraph::new(text)
@@ -352,11 +346,18 @@ fn render_log(f: &mut Frame, app: &GameApp, area: Rect) {
     let display_count = area.height.saturating_sub(2) as usize;
     let start_idx = app.log_messages.len().saturating_sub(display_count);
 
-    for msg in &app.log_messages[start_idx..] {
-        text.push(Line::from(Span::styled(
-            format!(" {}", msg),
-            Style::default().fg(Color::LightCyan),
-        )));
+    let messages = &app.log_messages[start_idx..];
+    
+    for (i, msg) in messages.iter().enumerate() {
+        let is_latest = i == messages.len().saturating_sub(1);
+        
+        let style = if is_latest {
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        
+        text.push(Line::from(Span::styled(format!("> {}", msg), style)));
     }
 
     let block = Paragraph::new(text)
@@ -409,7 +410,10 @@ fn render_inventory_menu(f: &mut Frame, app: &GameApp, area: Rect) {
             text.push(Line::from(format!("[{}] {}", i, item.name)));
         }
         text.push(Line::from(""));
-        text.push(Line::from("Press 'U' to consume/equip item."));
+        text.push(Line::from(Span::styled(
+            "[U] Consume/Equip top item   |   [C] Craft / Combine items",
+            Style::default().fg(Color::Yellow),
+        )));
     }
     let block = Paragraph::new(text).block(
         Block::default()
@@ -417,7 +421,7 @@ fn render_inventory_menu(f: &mut Frame, app: &GameApp, area: Rect) {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(COLOR_NEON_MAGENTA)),
     );
-    let popup_area = centered_rect(40, 40, area);
+    let popup_area = centered_rect(50, 40, area);
     f.render_widget(Clear, popup_area);
     f.render_widget(block, popup_area);
 }
@@ -517,50 +521,36 @@ fn render_help_menu(f: &mut Frame, area: Rect) {
     let text = vec![
         Line::from(Span::styled(
             "NEURAL DUNGEON OPERATING MANUAL",
-            Style::default()
-                .fg(COLOR_NEON_CYAN)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            "TACTICAL LEGEND",
-            Style::default().fg(Color::Yellow),
-        )),
-        Line::from("  @ Player     Ω Hostile"),
-        Line::from("  ✦ Loot/Key   ▣ Locked Door"),
-        Line::from("  ▼ Descent    · Floor / Open"),
+        Line::from(Span::styled("TACTICAL LEGEND", Style::default().fg(Color::Yellow))),
+        Line::from("  @ Player     Ω Hostile / M Nexus Mind"),
+        Line::from("  ✦ Loot/Key   ▣ Locked / / Open Door"),
+        Line::from("  ▼ Descent    · Floor / ██ Wall"),
         Line::from("  N NPC        T Puzzle Terminal"),
         Line::from("  ▲ Hazard"),
         Line::from(""),
-        Line::from(Span::styled(
-            "MOVEMENT & COMBAT",
-            Style::default().fg(Color::Yellow),
-        )),
+        Line::from(Span::styled("MOVEMENT & COMBAT", Style::default().fg(Color::Yellow))),
         Line::from("[W, A, S, D] : Navigate grid. Walk into enemies to strike."),
-        Line::from("[Q]          : Heavy Overload Strike (Costs extra energy)."),
-        Line::from("[E]          : Evade. Use when enemy flashes yellow to dodge."),
+        Line::from("[X]          : Execute a dedicated standard strike (adjacent target)."),
+        Line::from("[Q]          : Heavy Overload Strike (200% dmg, costs 140 energy)."),
+        Line::from("[E]          : Evade & Riposte. Use when enemy flashes yellow."),
+        Line::from("[Space]      : Wait one time-tick to recharge energy."),
         Line::from(""),
-        Line::from(Span::styled(
-            "WORLD INTERACTION",
-            Style::default().fg(Color::Yellow),
-        )),
-        Line::from("[F]          : Interact. Open doors, talk to NPCs, or access Terminals."),
-        Line::from("[G]          : Grab item. Stand over ✦ to extract to inventory."),
+        Line::from(Span::styled("WORLD INTERACTION", Style::default().fg(Color::Yellow))),
+        Line::from("[F]          : Interact. Open doors, talk to NPCs, access Terminals."),
+        Line::from("[G]          : Grab item. Stand over +/W/✦ to extract to inventory."),
         Line::from("[>]          : Descend stairs. Must be standing on ▼."),
         Line::from(""),
-        Line::from(Span::styled(
-            "SYSTEM PROTOCOLS",
-            Style::default().fg(Color::Yellow),
-        )),
+        Line::from(Span::styled("SYSTEM PROTOCOLS", Style::default().fg(Color::Yellow))),
         Line::from("[I]          : Open Inventory Cache."),
         Line::from("[U]          : Consume/Equip top item in inventory."),
+        Line::from("[C]          : Craft/Combine 2x Health Patches (Inside Inventory)."),
         Line::from("[T]          : Toggle Display Theme (Cyberpunk / Monochrome)."),
-        Line::from("[ESC]        : Pause system operations."),
+        Line::from("[ESC]        : Pause system operations or close menus."),
         Line::from(""),
-        Line::from(Span::styled(
-            "Press [ESC] to close manual.",
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(Span::styled("Press [ESC] to close manual.", Style::default().fg(Color::DarkGray))),
     ];
 
     let block = Paragraph::new(text)
@@ -573,7 +563,7 @@ fn render_help_menu(f: &mut Frame, area: Rect) {
         )
         .alignment(Alignment::Left);
 
-    let popup_area = centered_rect(70, 90, area);
+    let popup_area = centered_rect(75, 90, area);
     f.render_widget(Clear, popup_area);
     f.render_widget(block, popup_area);
 }
@@ -588,7 +578,14 @@ fn render_puzzle_menu(
     f.render_widget(Clear, popup_area);
 
     let mut text = Vec::new();
-    let mut active_feedback: &Option<String> = &None;
+
+    // Extract the active_feedback cleanly without mutating a dummy variable
+    let active_feedback: &Option<String> = match state {
+        game_core::puzzle::PuzzleState::TokenVault { feedback, .. } => feedback,
+        game_core::puzzle::PuzzleState::QuantizationForge { feedback, .. } => feedback,
+        game_core::puzzle::PuzzleState::ContextCollapse { feedback, .. } => feedback,
+        game_core::puzzle::PuzzleState::InferenceReactor { feedback, .. } => feedback,
+    };
 
     match state {
         game_core::puzzle::PuzzleState::TokenVault {
@@ -597,9 +594,8 @@ fn render_puzzle_menu(
             fragments,
             selected,
             expected_len,
-            feedback,
+            ..
         } => {
-            active_feedback = feedback;
             text.push(Line::from(Span::styled(
                 format!("OBJECTIVE: {}", prompt_hint),
                 Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::BOLD),
@@ -646,10 +642,8 @@ fn render_puzzle_menu(
             vram_limit_gb,
             min_coherence,
             current_bits,
-            feedback,
             ..
         } => {
-            active_feedback = feedback;
             let weight_vram = (*model_params_b as f32) * (*current_bits as f32 / 8.0);
             let total_vram = weight_vram + *context_kv_gb;
             let coherence = match *current_bits {
@@ -704,9 +698,8 @@ fn render_puzzle_menu(
             logs,
             selected,
             max_budget,
-            feedback,
+            ..
         } => {
-            active_feedback = feedback;
             text.push(Line::from(Span::styled(
                 format!("OBJECTIVE: Prune KV Cache for task: '{}'", system_goal),
                 Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::BOLD),
@@ -746,10 +739,8 @@ fn render_puzzle_menu(
             stages,
             cursor,
             selected,
-            feedback,
             ..
         } => {
-            active_feedback = feedback;
             text.push(Line::from(Span::styled(
                 format!("OBJECTIVE: Reconstruct Pipeline -> {}", scenario_name),
                 Style::default().fg(COLOR_NEON_CYAN).add_modifier(Modifier::BOLD),
@@ -799,8 +790,6 @@ fn render_puzzle_menu(
     f.render_widget(block, popup_area);
 }
 
-
-
 fn render_puzzle_solved_menu(f: &mut Frame, explanation: &str, area: Rect) {
     let popup_area = centered_rect(60, 40, area);
     f.render_widget(Clear, popup_area);
@@ -834,5 +823,31 @@ fn render_puzzle_solved_menu(f: &mut Frame, explanation: &str, area: Rect) {
         .wrap(Wrap { trim: true })
         .alignment(Alignment::Center);
 
+    f.render_widget(block, popup_area);
+}
+
+fn render_victory_menu(f: &mut Frame, area: Rect) {
+    let text = vec![
+        Line::from(""),
+        Line::from("SECTOR 7 SECURED"),
+        Line::from("The facility is under your control."),
+        Line::from(""),
+        Line::from("[R] Initialize New Run"),
+        Line::from("[Q] Terminate Connection"),
+    ];
+    
+    let block = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title(" ESCAPE VELOCITY ACHIEVED ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(COLOR_HUD_GREEN)),
+        )
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(COLOR_HUD_GREEN).bg(Color::Black));
+        
+    let popup_area = centered_rect(40, 25, area);
+    f.render_widget(Clear, popup_area);
     f.render_widget(block, popup_area);
 }

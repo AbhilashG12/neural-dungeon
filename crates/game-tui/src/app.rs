@@ -20,6 +20,7 @@ pub enum UiMode {
     Paused,
     Inventory,
     GameOver,
+    Victory,
     Help,
     Dialogue {
         npc_id: usize,
@@ -72,6 +73,17 @@ impl GameApp {
         let (floor, player_start) = generator.generate_floor(56, 32, state.floor_number);
         state.current_floor = floor;
         state.player.position = player_start;
+
+        // Initialize First Optional Quest
+        state.player.active_quests.clear();
+        state.player.active_quests.push(game_core::state::Quest {
+            id: format!("quest_{}", state.floor_number),
+            title: "Locate the Hidden Weapon Cache".to_string(),
+            completed: false,
+            target_count: 3,
+            current_count: 0,
+            reward_xp: 100,
+        });
 
         let (tx, rx) = mpsc::unbounded_channel();
         let real_engine = inference_adapter::RealEngine::new();
@@ -126,10 +138,12 @@ impl GameApp {
                             } else if last_memory.starts_with(&prefix) {
                                 last_memory.push_str(&clean_tok);
                             } else {
-                                npc.memory.push(format!("{}: {}", npc.name, clean_tok.trim_start()));
+                                npc.memory
+                                    .push(format!("{}: {}", npc.name, clean_tok.trim_start()));
                             }
                         } else {
-                            npc.memory.push(format!("{}: {}", npc.name, clean_tok.trim_start()));
+                            npc.memory
+                                .push(format!("{}: {}", npc.name, clean_tok.trim_start()));
                         }
                     }
                 }
@@ -147,18 +161,20 @@ impl GameApp {
                             if last_memory.starts_with(&prefix) {
                                 *last_memory = format!("{}: {}", npc.name, response.dialogue);
                             } else {
-                                npc.memory.push(format!("{}: {}", npc.name, response.dialogue));
+                                npc.memory
+                                    .push(format!("{}: {}", npc.name, response.dialogue));
                             }
                         } else {
-                            npc.memory.push(format!("{}: {}", npc.name, response.dialogue));
+                            npc.memory
+                                .push(format!("{}: {}", npc.name, response.dialogue));
                         }
                     }
 
                     if let Some(act) = &response.proposed_action {
                         if act == "unlock_doors" {
                             for tile in self.state.current_floor.tiles.iter_mut() {
-                                if let game_core::world::Tile::Door { locked, .. } = tile {
-                                    *locked = false;
+                                if let game_core::world::Tile::Door { is_open, .. } = tile {
+                                    *is_open = true;
                                 }
                             }
                             self.log("AI SYSTEM: Override accepted. Doors unlocked.".to_string());
@@ -173,6 +189,15 @@ impl GameApp {
                                 .enemies
                                 .retain(|e| e.name != "The Nexus Mind (Architect)");
                             self.log("NARRATIVE VICTORY: The Nexus Mind has accepted your logic and assimilated. Sector 7 is secure.".to_string());
+                            for tile in self.state.current_floor.tiles.iter_mut() {
+                                if let game_core::world::Tile::Door { is_open, locked } = tile {
+                                    *is_open = true;
+                                    *locked = false;
+                                }
+                            }
+                            
+                            self.log("NARRATIVE VICTORY: The Nexus Mind has assimilated.".to_string());
+                            self.log("Facility lockdown lifted. Doors open.".to_string());
                         }
                     }
 
@@ -246,20 +271,47 @@ impl GameApp {
                         };
                     }
                     KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') => {
-                        self.ui_mode = UiMode::HelpMenu
+                        self.ui_mode = UiMode::HelpMenu;
                     }
-
                     KeyCode::Char('w') | KeyCode::Char('W') | KeyCode::Up => {
-                        action = Some(GameAction::Move { dx: 0, dy: -1 })
+                        action = Some(GameAction::Move { dx: 0, dy: -1 });
                     }
                     KeyCode::Char('s') | KeyCode::Char('S') | KeyCode::Down => {
-                        action = Some(GameAction::Move { dx: 0, dy: 1 })
+                        action = Some(GameAction::Move { dx: 0, dy: 1 });
                     }
+                    KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Left => {
+                        action = Some(GameAction::Move { dx: -1, dy: 0 });
+                    }
+                    KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Right => {
+                        action = Some(GameAction::Move { dx: 1, dy: 0 });
+                    }
+                    KeyCode::Char('p') | KeyCode::Char('P') => {
+                        // DEV WARP: Instantly teleport to Floor 5 with boss-ready stats
+                        self.state.floor_number = 5;
+                        self.state.player.level = 10;
+                        self.state.player.max_hp = 300;
+                        self.state.player.hp = 300;
+                        self.state.player.weapon = Some(game_core::state::Weapon {
+                            name: "Dev Admin Blade".to_string(),
+                            bonus_damage: 50,
+                        });
+                        
+                        let mut generator = dungeon_gen::Generator::new(self.state.seed + 5);
+                        let (floor, player_start) =
+                            generator.generate_floor(56, 32, self.state.floor_number);
+                        self.state.current_floor = floor;
+                        self.state.player.position = player_start;
+                        
+                        self.log("DEV MODE: Warped to Floor 5. Stats maxed.".to_string());
+                    }
+
                     KeyCode::Char('x') | KeyCode::Char('X') => {
                         let (px, py) = self.state.player.position;
                         let mut target_id = None;
                         for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
-                            if let Some(enemy) = self.state.current_floor.get_enemy_at(px + dx, py + dy) {
+                            if let Some(enemy) =
+                                self.state.current_floor.get_enemy_at(px + dx, py + dy)
+                            {
                                 target_id = Some(enemy.id);
                                 break;
                             }
@@ -273,13 +325,6 @@ impl GameApp {
                             self.log("No adjacent drone in range for Strike.".to_string());
                         }
                     }
-
-                    KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Left => {
-                        action = Some(GameAction::Move { dx: -1, dy: 0 })
-                    }
-                    KeyCode::Char('d') | KeyCode::Char('D') | KeyCode::Right => {
-                        action = Some(GameAction::Move { dx: 1, dy: 0 })
-                    }
                     KeyCode::Char('e') | KeyCode::Char('E') => action = Some(GameAction::Evade),
                     KeyCode::Char(' ') | KeyCode::Char('.') => action = Some(GameAction::Wait),
 
@@ -292,18 +337,25 @@ impl GameApp {
                             let tx = px + dx;
                             let ty = py + dy;
                             if let Some(game_core::world::Tile::Terminal { puzzle, is_solved }) =
-                                self.state.current_floor.get_tile(tx, ty).cloned()
+                                self.state.current_floor.get_tile(tx, ty)
                             {
                                 if !is_solved {
-                                    let puzzle_seed = self.state.seed.wrapping_add(self.state.floor_number as u64 * 1000).wrapping_add((nx as u64) * 31 + (ny as u63));
+                                    let puzzle_seed = self
+                                        .state
+                                        .seed
+                                        .wrapping_add(self.state.floor_number as u64 * 1000)
+                                        .wrapping_add((tx as u64) * 31 + (ty as u64));
                                     self.ui_mode = UiMode::Puzzle {
                                         puzzle: puzzle.clone(),
-                                        state: game_core::puzzle::PuzzleState::new(&puzzle),
+                                        state: game_core::puzzle::PuzzleState::new(
+                                            &puzzle,
+                                            puzzle_seed,
+                                        ),
                                         coords: (tx, ty),
                                     };
                                 } else {
                                     self.log("Terminal already bypassed.".to_string());
-                                                                }
+                                }
                                 interacted = true;
                                 break;
                             }
@@ -323,7 +375,7 @@ impl GameApp {
                     }
                     KeyCode::Char('g') | KeyCode::Char('G') => action = Some(GameAction::GrabItem),
                     KeyCode::Char('u') | KeyCode::Char('U') => {
-                        action = Some(GameAction::UseItem { index: 0 })
+                        action = Some(GameAction::UseItem { index: 0 });
                     }
                     KeyCode::Char('q') | KeyCode::Char('Q') => {
                         let (px, py) = self.state.player.position;
@@ -345,7 +397,6 @@ impl GameApp {
                             self.log("No adjacent target for Overload Strike.".to_string());
                         }
                     }
-
                     KeyCode::Char('i') | KeyCode::Char('I') => self.ui_mode = UiMode::Inventory,
                     KeyCode::Esc => self.ui_mode = UiMode::Paused,
                     KeyCode::Char('>') => {
@@ -353,15 +404,36 @@ impl GameApp {
                         if let Some(game_core::world::Tile::StairsDown) =
                             self.state.current_floor.get_tile(px, py)
                         {
-                            self.state.floor_number += 1;
-                            let mut generator = dungeon_gen::Generator::new(
-                                self.state.seed + self.state.floor_number as u64,
-                            );
-                            let (floor, player_start) =
-                                generator.generate_floor(56, 32, self.state.floor_number);
-                            self.state.current_floor = floor;
-                            self.state.player.position = player_start;
-                            self.log(format!("Descended to Sector {}.", self.state.floor_number));
+                            if self.state.floor_number >= 5 {
+                                // Cap the game at Floor 5 and trigger the ending!
+                                self.ui_mode = UiMode::Victory;
+                                self.log("ESCAPE VELOCITY ACHIEVED. Sector 7 conquered.".to_string());
+                            } else {
+                                self.state.floor_number += 1;
+                                let mut generator = dungeon_gen::Generator::new(
+                                    self.state.seed + self.state.floor_number as u64,
+                                );
+                                let (floor, player_start) =
+                                    generator.generate_floor(56, 32, self.state.floor_number);
+                                self.state.current_floor = floor;
+                                self.state.player.position = player_start;
+                                self.log(format!("Descended to Sector {}.", self.state.floor_number));
+
+                                // Generate new Optional Quest for the next floor
+                                self.state.player.active_quests.clear();
+                                self.state.player.active_quests.push(game_core::state::Quest {
+                                    id: format!("quest_{}", self.state.floor_number),
+                                    title: if self.state.floor_number % 2 == 0 {
+                                        "Purge 3 Security Drones".to_string()
+                                    } else {
+                                        "Locate the Hidden Weapon Cache".to_string()
+                                    },
+                                    completed: false,
+                                    target_count: 3,
+                                    current_count: 0,
+                                    reward_xp: 100,
+                                });
+                            }
                         } else {
                             self.log("There are no stairs here.".to_string());
                         }
@@ -392,34 +464,56 @@ impl GameApp {
             }
             UiMode::Paused => match key.code {
                 KeyCode::Esc => self.ui_mode = UiMode::Playing,
-                KeyCode::Char('q') => self.should_quit = true,
+                KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
                 _ => {}
             },
-            UiMode::Help => {
-                if let KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::Char('H') =
-                    key.code
-                {
+            UiMode::Help | UiMode::HelpMenu => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc
+                        | KeyCode::Enter
+                        | KeyCode::Char('?')
+                        | KeyCode::Char('h')
+                        | KeyCode::Char('H')
+                ) {
                     self.ui_mode = UiMode::Playing;
                 }
             }
-            UiMode::Inventory => {
-                if key.code == KeyCode::Esc
-                    || key.code == KeyCode::Char('i')
-                    || key.code == KeyCode::Char('I')
-                {
+            UiMode::Inventory => match key.code {
+                KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('I') => {
                     self.ui_mode = UiMode::Playing;
                 }
-            }
-            UiMode::HelpMenu => {
-                if key.code == KeyCode::Esc || key.code == KeyCode::Enter {
-                    self.ui_mode = UiMode::Playing;
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    // Loot Crafting System
+                    let patches: Vec<usize> = self.state.player.inventory.iter()
+                        .enumerate()
+                        .filter(|(_, item)| item.name == "Health Patch")
+                        .map(|(i, _)| i)
+                        .collect();
+
+                    if patches.len() >= 2 {
+                        self.state.player.inventory.remove(patches[1]); // Remove higher index first
+                        self.state.player.inventory.remove(patches[0]);
+                        self.state.player.inventory.push(game_core::world::Item {
+                            id: self.state.turn_count as usize,
+                            name: "Overclock Stim (+50 HP)".to_string(),
+                            position: (0, 0),
+                            // FIXED: Changed heal_amount to heal
+                            item_type: game_core::world::ItemType::Consumable { heal: 50 },
+                        });
+                        self.log("CRAFTED: 2x Health Patch -> 1x Overclock Stim.".to_string());
+                    } else {
+                        self.log("CRAFTING FAILED: Need 2x Health Patches.".to_string());
+                    }
                 }
-            }
+                _ => {}
+            },
             UiMode::PuzzleSolved { .. } => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ')) {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ')
+                ) {
                     self.ui_mode = UiMode::Playing;
-                } else {
-                    self.ui_mode = current_mode;
                 }
             }
             UiMode::Puzzle {
@@ -427,22 +521,150 @@ impl GameApp {
                 state,
                 coords,
             } => {
-                let current_coords = *coords;
-                let puzzle_type = puzzle.clone();
-                let explanation = state.get_advanced_explanation().to_string();
-                let solved = false;
-                let mut abort = false;
-
                 match key.code {
-                    KeyCode::Esc => abort = true,
+                    KeyCode::Esc => {
+                        self.ui_mode = UiMode::Playing;
+                    }
+                    KeyCode::Backspace | KeyCode::Char('c') | KeyCode::Char('C') => {
+                        if let game_core::puzzle::PuzzleState::TokenVault {
+                            selected,
+                            feedback,
+                            ..
+                        } = state
+                        {
+                            selected.clear();
+                            *feedback = Some("Buffer cleared.".to_string());
+                        }
+                        self.ui_mode = current_mode;
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        let idx = c.to_digit(10).unwrap() as usize;
+                        match state {
+                            game_core::puzzle::PuzzleState::TokenVault {
+                                fragments,
+                                selected,
+                                feedback,
+                                ..
+                            } => {
+                                if idx < fragments.len() {
+                                    if let Some(pos) = selected.iter().position(|&x| x == idx) {
+                                        selected.remove(pos);
+                                    } else {
+                                        selected.push(idx);
+                                    }
+                                    *feedback = None;
+                                }
+                            }
+                            game_core::puzzle::PuzzleState::ContextCollapse {
+                                logs,
+                                selected,
+                                feedback,
+                                ..
+                            } => {
+                                if idx < logs.len() {
+                                    if let Some(pos) = selected.iter().position(|&x| x == idx) {
+                                        selected.remove(pos);
+                                    } else {
+                                        selected.push(idx);
+                                    }
+                                    *feedback = None;
+                                }
+                            }
+                            _ => {}
+                        }
+                        self.ui_mode = current_mode;
+                    }
+                    KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => {
+                        match state {
+                            game_core::puzzle::PuzzleState::QuantizationForge {
+                                current_bits,
+                                feedback,
+                                ..
+                            } => {
+                                *current_bits = match *current_bits {
+                                    2 => 4,
+                                    4 => 8,
+                                    8 => 16,
+                                    _ => 32,
+                                };
+                                *feedback = None;
+                            }
+                            game_core::puzzle::PuzzleState::InferenceReactor {
+                                cursor, feedback, ..
+                            } => {
+                                if *cursor > 0 {
+                                    *cursor -= 1;
+                                }
+                                *feedback = None;
+                            }
+                            _ => {}
+                        }
+                        self.ui_mode = current_mode;
+                    }
+                    KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => {
+                        match state {
+                            game_core::puzzle::PuzzleState::QuantizationForge {
+                                current_bits,
+                                feedback,
+                                ..
+                            } => {
+                                *current_bits = match *current_bits {
+                                    32 => 16,
+                                    16 => 8,
+                                    8 => 4,
+                                    _ => 2,
+                                };
+                                *feedback = None;
+                            }
+                            game_core::puzzle::PuzzleState::InferenceReactor {
+                                stages,
+                                cursor,
+                                feedback,
+                                ..
+                            } => {
+                                if *cursor + 1 < stages.len() {
+                                    *cursor += 1;
+                                }
+                                *feedback = None;
+                            }
+                            _ => {}
+                        }
+                        self.ui_mode = current_mode;
+                    }
+                    KeyCode::Char(' ') => {
+                        if let game_core::puzzle::PuzzleState::InferenceReactor {
+                            stages,
+                            cursor,
+                            selected,
+                            feedback,
+                            ..
+                        } = state
+                        {
+                            if let Some(sel_idx) = *selected {
+                                stages.swap(sel_idx, *cursor);
+                                *selected = None;
+                            } else {
+                                *selected = Some(*cursor);
+                            }
+                            *feedback = None;
+                        }
+                        self.ui_mode = current_mode;
+                    }
                     KeyCode::Enter => {
-                        if state.check_win_condition() {
-                            if let Some(game_core::world::Tile::Terminal { is_solved, .. }) =
-                                self.state.current_floor.get_tile_mut(coords.0, coords.1)
+                        if state.evaluate_submission() {
+                            let explanation = state.get_advanced_explanation();
+                            let target_coords = *coords;
+                            let solved_puzzle = puzzle.clone();
+
+                            if let Some(game_core::world::Tile::Terminal { is_solved, .. }) = self
+                                .state
+                                .current_floor
+                                .get_tile_mut(target_coords.0, target_coords.1)
                             {
                                 *is_solved = true;
                             }
 
+                            // Dispense key to inventory
                             self.state.player.inventory.push(game_core::world::Item {
                                 id: self.state.turn_count as usize,
                                 name: "Sector Key".to_string(),
@@ -452,134 +674,58 @@ impl GameApp {
                                 },
                             });
 
-                            let reward_msg = match puzzle {
+                            // AI Companion Buffs / Puzzle Rewards
+                            let reward_msg = match solved_puzzle {
                                 game_core::world::PuzzleType::TokenVault => {
-                                    "Token sequence accepted. Sector Key dispensed. (Lesson: LLMs process sub-word fragments)."
+                                    self.state.player.max_hp += 20;
+                                    self.state.player.hp = self.state.player.max_hp;
+                                    "Dr. Aris optimizes your link. Max HP +20! Sector Key dispensed."
                                 }
                                 game_core::world::PuzzleType::QuantizationForge => {
-                                    "Precision balanced. Sector Key dispensed. (Lesson: Q4 reduces VRAM with minimal loss)."
+                                    self.state.player.xp += 150;
+                                    "Maintenance Node 7 overclocks your servos. +150 XP! Sector Key dispensed."
                                 }
                                 game_core::world::PuzzleType::ContextCollapse => {
-                                    "Cache pruned. Sector Key dispensed. (Lesson: Finite KV caches require context budgeting)."
+                                    self.state.player.energy = 150;
+                                    "Security Terminal clears cache. Energy Overcharged! Sector Key dispensed."
                                 }
                                 game_core::world::PuzzleType::InferenceReactor => {
-                                    "Pipeline aligned. Sector Key dispensed. (Lesson: Embed -> Attention -> Logits -> Sample)."
+                                    self.state.player.xp += 75;
+                                    "The Architect aligns your pipeline. Combat efficiency maxed. Sector Key dispensed."
                                 }
                             };
                             self.log(reward_msg.to_string());
-                            self.ui_mode = UiMode::Playing;
+
+                            // Transition directly into the educational explanation screen!
+                            self.ui_mode = UiMode::PuzzleSolved { explanation };
                         } else {
-                            self.log("ACCESS DENIED: Neural configuration invalid.".to_string());
+                            self.log("Terminal compilation failed. Check diagnostic.".to_string());
+                            // Persist the updated `state.feedback` diagnostic on the puzzle popup
+                            self.ui_mode = current_mode;
                         }
                     }
-
-                    KeyCode::Char(c) => match state {
-                        game_core::puzzle::PuzzleState::TokenVault {
-                            selected,
-                            fragments,
-                            ..
-                        } => {
-                            if let Some(digit) = c.to_digit(10) {
-                                let idx = digit as usize;
-                                if idx < fragments.len() {
-                                    if let Some(pos) = selected.iter().position(|&x| x == idx) {
-                                        selected.remove(pos);
-                                    } else {
-                                        selected.push(idx);
-                                    }
-                                }
-                            }
-                        }
-                        game_core::puzzle::PuzzleState::ContextCollapse {
-                            selected, logs, ..
-                        } => {
-                            if let Some(digit) = c.to_digit(10) {
-                                let idx = digit as usize;
-                                if idx < logs.len() {
-                                    if let Some(pos) = selected.iter().position(|&x| x == idx) {
-                                        selected.remove(pos);
-                                    } else {
-                                        selected.push(idx);
-                                    }
-                                }
-                            }
-                        }
-                        game_core::puzzle::PuzzleState::InferenceReactor {
-                            cursor,
-                            stages,
-                            selected,
-                        } => {
-                            if (c == 'w' || c == 'W') && *cursor > 0 {
-                                *cursor -= 1;
-                            }
-                            if (c == 's' || c == 'S') && *cursor < stages.len() - 1 {
-                                *cursor += 1;
-                            }
-                            if c == ' ' {
-                                if let Some(sel_idx) = selected {
-                                    stages.swap(*sel_idx, *cursor);
-                                    *selected = None;
-                                } else {
-                                    *selected = Some(*cursor);
-                                }
-                            }
-                        }
-                        _ => {}
-                    },
-                    KeyCode::Up | KeyCode::Down => match state {
-                        game_core::puzzle::PuzzleState::QuantizationForge { current_bits } => {
-                            if key.code == KeyCode::Up && *current_bits < 32 {
-                                *current_bits *= 2;
-                            }
-                            if key.code == KeyCode::Down && *current_bits > 1 {
-                                *current_bits /= 2;
-                            }
-                        }
-                        _ => {}
-                    },
                     _ => {}
                 }
-
-                if abort {
-                    self.ui_mode = UiMode::Playing;
-                } else if solved {
-                    if let Some(game_core::world::Tile::Terminal { is_solved, .. }) = self
-                        .state
-                        .current_floor
-                        .get_tile_mut(current_coords.0, current_coords.1)
-                    {
-                        *is_solved = true;
-                    }
-
-                    let reward_msg = match puzzle_type {
-                        game_core::world::PuzzleType::TokenVault => {
-                            "REWARD: Plasma Battery. Terminal hacked."
-                        }
-                        game_core::world::PuzzleType::QuantizationForge => {
-                            "REWARD: Sector Map. Terminal hacked."
-                        }
-                        game_core::world::PuzzleType::ContextCollapse => {
-                            "REWARD: Max HP +20. Terminal hacked."
-                        }
-                        game_core::world::PuzzleType::InferenceReactor => {
-                            "REWARD: Energy +50. Terminal hacked."
-                        }
-                    };
-                    self.log(reward_msg.to_string());
-                    self.ui_mode = UiMode::PuzzleSolved { explanation };
-                } else {
-                    self.ui_mode = current_mode;
-                }
             }
-            UiMode::GameOver => match key.code {
-                KeyCode::Char('q') => self.should_quit = true,
-                KeyCode::Char('r') => {
+            UiMode::GameOver | UiMode::Victory => match key.code {
+                KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
+                KeyCode::Char('r') | KeyCode::Char('R') => {
                     self.state = game_core::state::GameState::new_test_state();
                     let mut generator = dungeon_gen::Generator::new(self.state.seed);
                     let (floor, player_start) =
                         generator.generate_floor(56, 32, self.state.floor_number);
                     self.state.current_floor = floor;
                     self.state.player.position = player_start;
+                    self.state.player.active_quests.clear();
+                    self.state.player.active_quests.push(game_core::state::Quest {
+                        id: format!("quest_{}", self.state.floor_number),
+                        title: "Locate the Hidden Weapon Cache".to_string(),
+                        completed: false,
+                        target_count: 3,
+                        current_count: 0,
+                        reward_xp: 100,
+                    });
+
                     self.ui_mode = UiMode::Playing;
                     self.log_messages.clear();
                     self.log("SYSTEM REBOOT: New clone initialized.".to_string());
@@ -621,6 +767,28 @@ impl GameApp {
                         // Save updated input_buffer and is_waiting state back to self.ui_mode!
                         self.ui_mode = current_mode;
 
+                        // Extract live puzzle context from the current floor's terminal so the NPC can teach the player
+                        let mut live_puzzle_context = String::new();
+                        for y in 0..self.state.current_floor.height as i32 {
+                            for x in 0..self.state.current_floor.width as i32 {
+                                if let Some(game_core::world::Tile::Terminal {
+                                    puzzle,
+                                    is_solved: false,
+                                }) = self.state.current_floor.get_tile(x, y)
+                                {
+                                    let p_seed = self
+                                        .state
+                                        .seed
+                                        .wrapping_add(self.state.floor_number as u64 * 1000)
+                                        .wrapping_add((x as u64) * 31 + (y as u64));
+                                    let temp_state =
+                                        game_core::puzzle::PuzzleState::new(&puzzle, p_seed);
+                                    live_puzzle_context = temp_state.get_npc_teaching_context();
+                                    break;
+                                }
+                            }
+                        }
+
                         let npc_idx = self
                             .state
                             .current_floor
@@ -630,8 +798,6 @@ impl GameApp {
                             .unwrap();
                         let npc = &mut self.state.current_floor.npcs[npc_idx];
 
-                        // Record history BEFORE pushing the new player turn and placeholder
-                        // so we don't send the current question twice in the prompt!
                         let prior_history = npc.memory.join("\n");
 
                         npc.memory.push(format!("Player: {}", msg));
@@ -646,8 +812,8 @@ impl GameApp {
 
                         let req = InferenceRequest {
                             system_prompt: format!(
-                                "You are {}. Personality: {}. Goal: {}",
-                                npc.name, npc.personality, npc.goal
+                                "You are {}. Personality: {}. Goal: {} CURRENT FLOOR TERMINAL DATA: {}",
+                                npc.name, npc.personality, npc.goal, live_puzzle_context
                             ),
                             conversation_history: prior_history,
                             user_input: msg,
@@ -666,7 +832,8 @@ impl GameApp {
                         let tx_tokens = tx.clone();
                         tokio::spawn(async move {
                             while let Some(token) = token_rx.recv().await {
-                                let _ = tx_tokens.send(AsyncEvent::TokenStream { npc_id: id, token });
+                                let _ =
+                                    tx_tokens.send(AsyncEvent::TokenStream { npc_id: id, token });
                             }
                         });
 

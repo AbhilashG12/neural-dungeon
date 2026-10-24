@@ -2,7 +2,7 @@ use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq,Clone, Debug)]
 pub enum PuzzleState {
     TokenVault {
         target: &'static str,

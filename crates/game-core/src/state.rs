@@ -21,6 +21,9 @@ pub struct Quest {
     pub id: String,
     pub title: String,
     pub completed: bool,
+    pub current_count: usize,
+    pub target_count: usize,
+    pub reward_xp: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -37,6 +40,7 @@ pub struct Player {
     pub level: u32,
     pub xp: u32,
     pub weapon: Option<Weapon>,
+    pub hit_timer: u8,
 }
 
 impl GameState {
@@ -76,6 +80,7 @@ impl GameState {
             name: "Security Drone".to_string(),
             state: EnemyState::Idle,
             aggro_range: 6,
+            hit_timer: 0,
         });
         Self {
             turn_count: 0,
@@ -92,6 +97,9 @@ impl GameState {
                     id: "main_01".to_string(),
                     title: "Explore and locate Sector Key".to_string(),
                     completed: false,
+                    target_count: 1,
+                    current_count: 0,
+                    reward_xp: 50,
                 }],
                 evading: false,
                 max_inventory: 12,
@@ -101,6 +109,8 @@ impl GameState {
                     name: "Plasma Blade".to_string(),
                     bonus_damage: 0,
                 }),
+                hit_timer: 0,
+
             },
             current_floor: DungeonFloor::new(40, 20),
         }

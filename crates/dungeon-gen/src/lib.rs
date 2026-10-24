@@ -140,6 +140,7 @@ impl Generator {
                     name: "The Nexus Mind (Architect)".to_string(),
                     state: EnemyState::Idle,
                     aggro_range: 15,
+                    hit_timer: 0,
                 });
 
                 floor.npcs.push(game_core::world::Npc {
@@ -177,6 +178,7 @@ impl Generator {
                             name: name.to_string(),
                             state: EnemyState::Idle,
                             aggro_range: 12,
+                            hit_timer: 0,
                         });
                     }
 
