@@ -37,7 +37,7 @@ Neural Dungeon runs entirely locally. It does not require an internet connection
 Clone the repository and navigate to the project root:
 
 ```bash
-git clone https://github.com/yourusername/neural-dungeon.git
+git clone https://github.com/AbhilashG12/neural-dungeon.git
 cd neural-dungeon
 ```
 
