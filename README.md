@@ -43,10 +43,19 @@ cd neural-dungeon
 
 ### 3. Download the LLM Weights & Tokenizer
 
-The game's inference engine is tuned for the lightweight **SmolLM-Instruct** model. You must download the safetensors and tokenizer files and place them directly in the root directory of the project.
+The game's inference engine is tuned for the lightweight **SmolLM2-360M-Instruct** model (roughly 750 MB in total). Run the commands below from the project root (the same folder as `Cargo.toml`). They download the files straight into place and rename them to the exact filenames the game expects.
 
-- **Model (`smollm-instruct.safetensors`):** [Download from HuggingFace](https://huggingface.co/HuggingFaceTB/SmolLM-135M-Instruct/tree/main)
-- **Tokenizer (`smollm_instruct_tokenizer.json`):** [Download from HuggingFace](https://huggingface.co/HuggingFaceTB/SmolLM-135M-Instruct/blob/main/tokenizer.json) (rename to `smollm_instruct_tokenizer.json` if necessary)
+**Model weights (`smollm-instruct.safetensors`, ~720 MB):**
+
+```bash
+curl -L -o smollm-instruct.safetensors https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/resolve/main/model.safetensors
+```
+
+**Tokenizer (`smollm_instruct_tokenizer.json`):**
+
+```bash
+curl -L -o smollm_instruct_tokenizer.json https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct/resolve/main/tokenizer.json
+```
 
 Ensure your project root looks like this:
 
