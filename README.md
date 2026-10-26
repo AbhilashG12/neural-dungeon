@@ -1,5 +1,9 @@
 # Neural Dungeon 🧠⚔️
 
+<p align="center">
+  <img src="assets/floor1.png" width="800" alt="Neural Dungeon gameplay on Floor 1">
+</p>
+
 **Neural Dungeon: The Forgotten Lab** is a tactical cyberpunk roguelike built in Rust and powered entirely by a local Large Language Model (LLM) inference engine. Rendered beautifully in the terminal, it combines hardcore turn-based combat with natural language NPC interactions and interactive puzzles that teach the real-world mechanics of artificial intelligence.
 
 ## The Story
@@ -21,6 +25,21 @@ But the dungeon itself is alive. The NPCs you meet are powered by local LLMs tha
   - **Context Collapse:** Prune KV cache logs to stay under a strict token budget.
   - **Inference Reactor:** Mathematically align the execution pipeline of a neural network (Tokenize → Embed → Attention → Logits).
 - **Robust Engine:** Complete with a deterministic procedural generation system, dynamic field-of-view, inventory crafting, and full Save/Load state persistence.
+
+## Screenshots
+
+### Live AI NPC Conversations
+
+<p align="center">
+  <img src="assets/conversation.png" width="800" alt="Talking to an LLM-powered NPC">
+</p>
+
+### Educational AI Puzzles
+
+<p align="center">
+  <img src="assets/task_1.png" width="400" alt="Tokenization puzzle">
+  <img src="assets/task_1_success.png" width="400" alt="Tokenization puzzle success log">
+</p>
 
 ## Installation & Setup
 
@@ -76,6 +95,10 @@ cargo run --release
 ```
 
 ## Controls
+
+<p align="center">
+  <img src="assets/help_menu.png" width="600" alt="Neural Dungeon help menu">
+</p>
 
 The interface is entirely keyboard-driven. No mouse is required.
 
